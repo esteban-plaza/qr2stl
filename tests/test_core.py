@@ -1,3 +1,4 @@
+import os
 import struct
 from collections import Counter
 
@@ -114,9 +115,9 @@ def test_write_stl(tmp_path, matrix):
 
 def test_generate_modes(tmp_path, matrix):
     files = core.generate(matrix, 50, 1.2, 0.8, "single", str(tmp_path / "a.stl"))
-    assert [p.split("/")[-1] for p in files] == ["a.stl"]
+    assert [os.path.basename(p) for p in files] == ["a.stl"]
     files = core.generate(matrix, 50, 1.2, 0.8, "split", str(tmp_path / "b.stl"))
-    assert [p.split("/")[-1] for p in files] == ["b_base.stl", "b_codigo.stl"]
+    assert [os.path.basename(p) for p in files] == ["b_base.stl", "b_codigo.stl"]
 
 
 @pytest.mark.parametrize("base, layer, first, expected_n, expected_z", [
