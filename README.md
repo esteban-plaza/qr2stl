@@ -1,18 +1,22 @@
 # qr2stl
 
-App de escritorio (PySide6) que genera un código QR imprimible en 3D a partir de una URL.
+App de escritorio (Python + Qt 6) que genera un código QR imprimible en 3D a partir de una URL, con **marco** y **texto debajo** opcionales, y una **vista previa 3D** en tiempo real.
 
-- **Ender (Cura, 1 extrusor):** exporta **1 STL** (base + módulos en relieve) y, si le soltás el `.gcode` que sliceaste en Cura, le **inserta la pausa M0** para el cambio de filamento.
-- **Bambu Lab:** exporta un **proyecto 3MF** con un objeto de dos partes (`base` y `codigo`), cada una asignada a un filamento.
+Todo lo que está en relieve (código, marco y texto) sale del segundo color con **un solo cambio de filamento por capa**:
+
+- **Ender 3 · Cura (1 extrusor):** exportás el STL, lo sliceás en Cura y le soltás el `.gcode` a la app, que le **inserta la pausa M0**.
+- **Bambu Lab:** exportás el STL y en Bambu Studio agregás un **cambio de filamento** en la capa que te indica la app (con AMS es automático).
+
+> El export de **proyecto 3MF multicolor** para Bambu Lab está **deshabilitado**: Bambu Studio no lo cargaba bien. El cambio de filamento por capa da el mismo resultado con un solo STL. El código anterior quedó en el historial de git (`src/qr2stl/bambu.py` en `2428ef6`).
 
 ## Descargas
 
 Los builds de Windows y macOS (arm64 e Intel) salen de GitHub Actions:
 
 - En cada push a `main` quedan como *artifacts* del workflow **build**.
-- En cada tag `v*` (por ejemplo `git tag v0.1.0 && git push --tags`) se publican en **Releases**.
+- En cada tag `v*` (por ejemplo `git tag v0.2.0 && git push --tags`) se publican en **Releases**.
 
-**macOS:** la app no está firmada, así que Gatekeeper la bloquea. La primera vez, abrila con clic derecho → Abrir, o corré:
+**macOS:** la app tiene firma ad-hoc, sin notarizar, así que Gatekeeper la bloquea. La primera vez, abrila con clic derecho → Abrir, o corré:
 
 ```bash
 xattr -dr com.apple.quarantine qr2stl.app
@@ -20,25 +24,39 @@ xattr -dr com.apple.quarantine qr2stl.app
 
 ## Uso
 
-### Configuración
+La ventana tiene la vista 3D a la izquierda y el inspector a la derecha. Cada cambio se ve al instante en la vista previa.
 
-| Campo | Default | Notas |
-|---|---|---|
-| URL | `https://` | Cuanto más larga, más versión de QR y módulos más chicos |
-| Lado total | 50 mm | Incluye el borde |
-| Espesor base | 1.2 mm | Conviene que sea múltiplo de la altura de capa |
-| Relieve | 0.8 mm | Múltiplo de la altura de capa, y ≥ 2 capas |
-| Borde | 2 módulos | El estándar pide 4; con la base de otro color, 2 alcanza |
-| Corrección de error | M | Subir a H agrega módulos y los achica |
-| Altura de capa / primera capa | 0.2 / 0.2 mm | Solo se usan para calcular la pausa manual |
+### Vista previa 3D
 
-La app avisa si el módulo mide menos de 1.5 mm, si la base no cae en un borde de capa, si el relieve no es múltiplo de la altura de capa o si el relieve es de una sola capa.
+- **Arrastrar:** girar · **clic derecho / rueda apretada:** desplazar · **rueda o pellizco:** zoom · **doble clic:** volver a centrar.
+- Botones **3D / Arriba / Frente** (o ⌘1, ⌘2, ⌘3) y **↻** para la rotación automática, que arranca sola después de unos segundos sin tocar nada.
+- Los colores de la vista previa se eligen en *Colores de la vista previa*. Son solo para ver cómo queda: el color real lo da el filamento.
+
+### Parámetros
+
+| Sección | Campo | Default | Notas |
+|---|---|---|---|
+| Contenido | URL | `https://` | Cuanto más larga, más versión de QR y módulos más chicos |
+| | Corrección de errores | M | Subir a H agrega módulos y los achica |
+| Tamaño | Lado del QR | 50 mm | Incluye el borde blanco |
+| | Borde blanco | 2 módulos | El estándar pide 4; con la base de otro color, 2 alcanza |
+| | Esquinas redondeadas | 0 mm | Radio de la placa; el marco lo sigue |
+| Alturas | Espesor de la base | 1,2 mm | Conviene que sea múltiplo de la altura de capa |
+| | Relieve | 0,8 mm | Múltiplo de la altura de capa, y ≥ 2 capas |
+| Marco | Ancho | 2 mm | Se agrega alrededor del QR, en relieve |
+| Texto debajo | Texto, fuente, negrita | — | Fuentes del sistema; se vectoriza con Qt |
+| | Alto de las mayúsculas | 6 mm | Si no entra a lo ancho, se achica solo (y avisa) |
+| Impresión | Altura de capa / primera capa | 0,2 / 0,2 mm | Para calcular la capa del cambio de color |
+
+La app avisa, entre otras cosas, si el módulo mide menos de 1,5 mm, si el texto es muy chico, si el marco se pega al código, si la base no cae en un borde de capa o si el relieve es de una sola capa.
+
+Las preferencias se recuerdan entre sesiones. *Archivo → Restablecer valores* vuelve a los defaults.
 
 ### Ender 3 Neo + Cura
 
-1. **Exportar STL…**
+1. **Exportar STL…** (⌘E)
 2. Slicealo en Cura **sin raft** y guardá el `.gcode`.
-3. Soltá el `.gcode` en la zona punteada. Se genera `<nombre>_pausa.gcode` al lado.
+3. Soltá el `.gcode` en la zona punteada (o *Archivo → Insertar pausa en un G-code…*, ⌘G). Se genera `<nombre>_pausa.gcode` al lado.
 
 La pausa se inserta antes de la primera capa cuyo punto medio queda en Z ≥ base, detectada por la **Z real del G-code**. Por eso funciona con cualquier altura de capa o de primera capa, y también con capas adaptativas.
 
@@ -50,20 +68,17 @@ La secuencia que se inserta:
 4. si configuraste una purga, la extruye;
 5. vuelve a la posición y restaura E (`G92`) y el modo de extrusión.
 
-El parking, la elevación, la retracción y la purga se configuran en la misma pestaña.
+El parking, la elevación, la retracción y la purga están en *Opciones de la pausa*.
 
 **Alternativa manual en Cura:** Extensiones → Post Processing → Modify G-Code → Pause at Height → *By Layer* → **Pause Layer = N**, con N igual a la cantidad de capas de la base (la app lo muestra). Método M0.
 
-> El handoff original decía `round(base / capa) + 1`, y eso le erra por uno. En Cura 5.x la pausa se inserta **antes** de `;LAYER:<N>` (con base 0), y en el `main` de Cura va **al final** de la capa N del preview (con base 1). En los dos casos se imprimen N capas antes de pausar: con 1.2 / 0.2, N = 6.
+> En Cura 5.x la pausa se inserta **antes** de `;LAYER:<N>` (con base 0), y en el `main` de Cura va **al final** de la capa N del preview (con base 1). En los dos casos se imprimen N capas antes de pausar: con 1,2 / 0,2, N = 6.
 
 ### Bambu Lab
 
-Bambu Studio carga las partes con su filamento asignado **solo** si el 3MF trae un `project_settings.config` válido. Ese archivo depende de la impresora, de los filamentos y de la versión de Bambu Studio, así que la app lo copia de una **plantilla**: cualquier `.3mf` guardado con Bambu Studio, por ejemplo uno bajado de MakerWorld, con la impresora y los filamentos que quieras.
-
-- **Con plantilla:** el proyecto abre con la impresora y los filamentos de la plantilla, y con la base y el código ya asignados a los slots que elegiste. Por defecto usa el filamento más claro para la base y el más oscuro para el código. La plantilla y los slots quedan guardados entre sesiones.
-- **Sin plantilla:** se genera un 3MF estándar con la base en blanco y el código en negro (`basematerials`). Al abrirlo, Bambu Studio pide mapear esos colores a tus filamentos.
-
-El CLI de Bambu Studio no sirve para esto: en la 2.08 se cae al leer cualquier 3MF, y cuando genera proyectos las listas por filamento salen inconsistentes con las del GUI.
+1. **Exportar STL…** y abrilo en Bambu Studio.
+2. Sliceá y, en la vista previa, subí el deslizador de capas hasta la capa N + 1 (la app te dice cuál y a qué Z).
+3. Hacé clic en el **+** del deslizador (o clic derecho → cambio de filamento) y elegí el filamento del código.
 
 ## Desarrollo
 
@@ -74,38 +89,53 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
-Todo queda en `.venv/`, dentro del repo. El núcleo (`core.py`, `gcode.py`, `bambu.py`) no depende de Qt: sus tests corren sin PySide6, y los de la GUI se saltean si PySide6 no está instalado.
+Todo queda en `.venv/`, dentro del repo. El núcleo (`core.py`, `gcode.py`) no depende de Qt: sus tests corren sin PySide6, y los de la GUI se saltean si PySide6 no está instalado (corren con la plataforma `offscreen`, sin el visor 3D).
 
 ```
 src/qr2stl/
-  core.py    matriz QR, malla (sin caras internas), STL binario, cálculo de la capa de pausa
-  gcode.py   inserta la pausa M0 en un G-code de Cura
-  bambu.py   proyecto 3MF de Bambu Studio (con plantilla) o 3MF estándar coloreado
-  gui.py     interfaz Qt
+  core.py        matriz QR, geometría 2D (placa, código, marco, texto) → malla con manifold3d, STL
+  gcode.py       inserta la pausa M0 en un G-code de Cura
+  textshape.py   vectoriza texto con las fuentes del sistema (QPainterPath)
+  app.py         punto de entrada (--selftest para CI)
+  ui/
+    window.py    ventana principal: inspector, toolbar, menús, exportación, preferencias
+    widgets.py   widgets animados: switch, control segmentado, slider+campo, secciones
+                 desplegables, banner de avisos, toast, zona de drop, selector de color
+    viewer.py    puente Python ↔ Qt Quick 3D (MeshGeometry)
+    viewer.qml   escena 3D, cámara orbital con amortiguación, presets animados, HUD
+tools/
+  build_app.py   empaqueta con PyInstaller, poda Qt, corre --selftest y arma el zip
+  make_icon.py   genera ui/icon.png
 ```
 
-### Malla
+### Geometría
 
-- Cada celda es una columna `(z0, z1)`. La malla lleva techo y piso por celda, y paredes solo en los tramos expuestos contra el vecino.
-- Las paredes se parten en todos los niveles Z usados, así no quedan uniones en T. Eso pasaba con borde 0 y dejaba aristas abiertas.
-- Los módulos que se tocan solo en diagonal comparten aristas entre 4 caras (non-manifold). Es inherente al QR, y Cura y Bambu Studio lo slicean bien.
+- Todo se arma en 2D con manifold3d (`CrossSection`): la placa (rectángulo con esquinas redondeadas), el código (tramos horizontales de módulos), el marco (placa menos la placa achicada) y el texto (contornos de Qt, regla NonZero para respetar los agujeros de letras como la «o»).
+- Para **exportar**: placa extruida de 0 a `base` ∪ relieve extruido de `base` a `base + relieve`. manifold3d devuelve una malla cerrada y manifold: cada arista la comparten exactamente 2 caras, incluso donde los módulos se tocan en diagonal.
+- Para la **vista previa**: los mismos cuerpos sin la unión 3D, y el código como una caja por tramo (sin triangular). Tiene el mismo volumen que la exacta y se arma en ~7 ms aun con un QR versión 40.
+
+### Interfaz
+
+- Qt Widgets para el inspector (sigue el modo claro/oscuro y el color de acento del sistema) y Qt Quick 3D para la vista previa, embebida con `QQuickWidget`. Quick 3D usa RHI: Metal en macOS y Direct3D 11 en Windows.
+- Animaciones con el framework de Qt (`QPropertyAnimation`, `QVariantAnimation`, grupos paralelos) en los widgets, y `Behavior` / `FrameAnimation` en QML.
 
 ### Builds
 
-`.github/workflows/build.yml` corre los tests del núcleo en Linux. Después, en `windows-latest`, `macos-latest` (arm64) y `macos-15-intel`:
-
-1. instala todo y corre la suite completa con la GUI offscreen;
-2. empaqueta con PyInstaller: `--onefile --windowed` en Windows y `.app` con `--windowed` en macOS;
-3. corre el ejecutable con `--selftest`;
-4. sube el zip.
-
-Para buildear local en una Mac:
-
 ```bash
 .venv/bin/pip install -e ".[gui,build]"
-.venv/bin/pyinstaller --noconfirm --windowed --name qr2stl src/qr2stl/__main__.py
+.venv/bin/python tools/build_app.py          # dist/qr2stl.app (macOS) o dist/qr2stl/ (Windows)
 ```
+
+`tools/build_app.py`:
+
+1. empaqueta con PyInstaller (`.app` en macOS, carpeta con `qr2stl.exe` en Windows);
+2. **poda Qt**: el hook de QML de PyInstaller mete todos los módulos QML (QtWebEngine, Qt3D, Charts…). Se dejan solo QtQml, QtQuick y QtQuick3D y se borran las bibliotecas de Qt que ningún binario referencia (457 MB → ~130 MB en macOS);
+3. en macOS completa el `Info.plist` (modo oscuro, versión) y firma ad-hoc;
+4. corre el ejecutable con `--selftest`, que genera un modelo con marco y texto y carga el visor 3D;
+5. con `--zip NOMBRE`, arma el zip.
+
+`.github/workflows/build.yml` corre los tests del núcleo en Linux y después, en `windows-latest`, `macos-latest` (arm64) y `macos-15-intel`, la suite completa con la GUI offscreen y `tools/build_app.py --zip`.
 
 ## Licencia de dependencias
 
-PySide6 es LGPL. Se usa `PySide6-Essentials`, sin modificar y enlazado dinámicamente.
+PySide6 es LGPL. Se usa sin modificar y enlazado dinámicamente. manifold3d es Apache 2.0.

@@ -7,3 +7,4 @@ dist/
 *.stl
 .pytest_cache/
 .DS_Store
+*.zip

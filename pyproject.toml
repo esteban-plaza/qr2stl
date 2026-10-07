@@ -4,21 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qr2stl"
-version = "0.1.0"
-description = "Genera un STL imprimible de un código QR a partir de una URL"
+dynamic = ["version"]
+description = "Genera un STL imprimible de un código QR (con marco y texto) a partir de una URL"
 requires-python = ">=3.10"
-dependencies = ["qrcode>=7.4"]
+dependencies = ["qrcode>=7.4", "numpy>=1.26", "manifold3d>=3.0"]
 
 [project.optional-dependencies]
-gui = ["PySide6-Essentials>=6.6"]
+gui = ["PySide6-Essentials>=6.8", "PySide6-Addons>=6.8"]
 dev = ["pytest>=8"]
-build = ["pyinstaller>=6.10"]
+build = ["pyinstaller>=6.10", "pillow>=10"]
 
 [project.gui-scripts]
-qr2stl = "qr2stl.gui:main"
+qr2stl = "qr2stl.app:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "qr2stl.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"qr2stl.ui" = ["*.qml", "*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

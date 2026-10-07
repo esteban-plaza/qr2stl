@@ -1,7 +1,7 @@
-import os
 import struct
 from collections import Counter
 
+import numpy as np
 import pytest
 
 from qr2stl import core
@@ -18,108 +18,147 @@ def _edge_balance(tris):
     """Cada arista dirigida (a→b) tiene que aparecer tantas veces como su inversa (b→a).
     Eso implica que no hay aristas con una sola cara y que el winding es consistente."""
     directed = Counter()
-    for t in tris:
+    for t in tris.tolist():
         for i in range(3):
             directed[(t[i], t[(i + 1) % 3])] += 1
     return {e: k for e, k in directed.items() if directed[(e[1], e[0])] != k}
 
 
-def _volume(tris):
-    v = 0.0
-    for a, b, c in tris:
-        v += (a[0] * (b[1] * c[2] - b[2] * c[1])
-              - a[1] * (b[0] * c[2] - b[2] * c[0])
-              + a[2] * (b[0] * c[1] - b[1] * c[0]))
-    return v / 6.0
+def _volume(model):
+    v = model.vertices.astype(np.float64)[model.triangles]
+    return float(np.einsum("ij,ij->i", v[:, 0], np.cross(v[:, 1], v[:, 2])).sum() / 6.0)
 
 
-def _bounds(tris):
-    pts = [p for t in tris for p in t]
-    return tuple(min(p[i] for p in pts) for i in range(3)), tuple(max(p[i] for p in pts) for i in range(3))
+def _square(w=1.0, h=1.0, x=0.0, y=0.0):
+    return np.array([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], dtype=float)
 
 
-@pytest.fixture
-def matrix():
-    return _matrix()
+def _model(**kw):
+    text = kw.pop("text_shape", None)
+    p = core.Params(**{"url": URL, **kw})
+    a = core.analyze(p)
+    return p, a, core.build_model(p, a, text)
 
 
-def test_matrix_includes_border(matrix):
-    n = len(matrix)
-    assert n == 21 + 4 * (core.qr_matrix(URL, core.ECC["M (15%)"], 2)[1] - 1) + 2 * 2
-    assert not any(matrix[0]) and not any(matrix[-1])
+# ---------------------------------------------------------------- QR
+def test_matrix_includes_border():
+    m, version = core.qr_matrix(URL, core.ECC["M (15%)"], 2)
+    assert len(m) == 21 + 4 * (version - 1) + 2 * 2
+    assert not any(m[0]) and not any(row[0] for row in m)
 
 
-@pytest.mark.parametrize("border", [0, 2, 4])
-def test_single_mesh_is_closed(border):
-    m = _matrix(border=border)
-    n = len(m)
-    tris = core.build_mesh(core.single_cells(m, 1.2, 0.8), n, 50 / n)
-    assert _edge_balance(tris) == {}
+# ---------------------------------------------------------------- malla
+@pytest.mark.parametrize("kw", [
+    {}, {"border": 0}, {"frame": True}, {"corner_radius": 5},
+    {"frame": True, "corner_radius": 6, "frame_width": 3},
+    {"text": "AB", "text_shape": core.TextShape([_square(0.6), _square(0.6, x=0.8)], 1.4)},
+])
+def test_mesh_is_closed(kw):
+    _, _, m = _model(**kw)
+    assert m.num_triangles > 0
+    assert _edge_balance(m.triangles) == {}
+    assert _volume(m) > 0  # normales hacia afuera
 
 
-def test_split_meshes_are_closed(matrix):
-    n = len(matrix)
-    base_cells, code_cells = core.split_cells(matrix, 1.2, 0.8)
-    for cells in (base_cells, code_cells):
-        assert _edge_balance(core.build_mesh(cells, n, 50 / n)) == {}
+def test_preview_model_matches_exact_volume():
+    kw = dict(url=URL, frame=True, corner_radius=4)
+    p = core.Params(**kw)
+    a = core.analyze(p)
+    fast, exact = core.build_model(p, a, exact=False), core.build_model(p, a)
+    assert _volume(fast) == pytest.approx(_volume(exact), rel=1e-6)
+    assert _edge_balance(fast.triangles) == {}  # dos cuerpos cerrados
 
 
-def test_single_volume_and_bounds(matrix):
-    n = len(matrix)
-    size, base, relief = 50.0, 1.2, 0.8
-    cell = size / n
-    dark = sum(map(sum, matrix))
-    tris = core.build_mesh(core.single_cells(matrix, base, relief), n, cell)
-    assert _volume(tris) == pytest.approx(size * size * base + dark * cell * cell * relief)
-    lo, hi = _bounds(tris)
-    assert lo == pytest.approx((0, 0, 0))
-    assert hi == pytest.approx((size, size, base + relief))
+def test_volume_and_bounds():
+    p, a, m = _model()
+    dark = sum(map(sum, a.matrix))
+    expected = p.size * p.size * p.base + dark * a.module ** 2 * p.relief
+    assert _volume(m) == pytest.approx(expected, rel=1e-4)
+    lo, hi = m.vertices.min(0), m.vertices.max(0)
+    assert lo == pytest.approx([0, 0, 0], abs=1e-4)
+    assert hi == pytest.approx([p.size, p.size, p.base + p.relief], abs=1e-4)
 
 
-def test_split_volumes(matrix):
-    n = len(matrix)
-    size, base, relief = 40.0, 1.0, 0.6
-    cell = size / n
-    dark = sum(map(sum, matrix))
-    base_cells, code_cells = core.split_cells(matrix, base, relief)
-    assert _volume(core.build_mesh(base_cells, n, cell)) == pytest.approx(size * size * base)
-    code = core.build_mesh(code_cells, n, cell)
-    assert _volume(code) == pytest.approx(dark * cell * cell * relief)
-    lo, hi = _bounds(code)
-    assert lo[2] == pytest.approx(base) and hi[2] == pytest.approx(base + relief)
+def _covered(model, z, points):
+    """Para cada punto XY, si hay una cara horizontal a la altura z que lo cubre."""
+    v = model.vertices[model.triangles].astype(np.float64)
+    flat = np.all(np.abs(v[:, :, 2] - z) < 1e-4, axis=1)
+    a, b, c = (v[flat, i, :2] for i in range(3))
+    out = []
+    for pt in points:
+        d = lambda p1, p2: (pt[0] - p2[:, 0]) * (p1[:, 1] - p2[:, 1]) - (p1[:, 0] - p2[:, 0]) * (pt[1] - p2[:, 1])
+        d1, d2, d3 = d(a, b), d(b, c), d(c, a)
+        neg = (d1 < 0) | (d2 < 0) | (d3 < 0)
+        pos = (d1 > 0) | (d2 > 0) | (d3 > 0)
+        out.append(bool(np.any(~(neg & pos))))
+    return out
 
 
-def test_not_mirrored(matrix):
-    """El finder pattern de arriba a la izquierda (fila 0, col 0 sin borde) tiene que quedar
-    en X chico / Y grande visto desde arriba."""
-    n = len(matrix)
-    border = 2
-    cells = core.single_cells(matrix, 1.0, 1.0)
-    r, c = border, border  # esquina del finder de arriba a la izquierda: siempre oscuro
-    assert matrix[r][c]
-    tris = core.build_mesh({(r, c): cells[(r, c)]}, n, 1.0)
-    lo, hi = _bounds(tris)
-    assert (lo[0], hi[1]) == pytest.approx((border, n - border))
+def test_not_mirrored():
+    """Celda por celda, la cara superior del relieve coincide con la matriz: fila 0 arriba
+    (Y máxima) y columna 0 a la izquierda."""
+    p, a, m = _model(border=1)
+    n, mod = a.n, a.module
+    pts = [((c + 0.5) * mod, (n - 1 - r + 0.5) * mod) for r in range(n) for c in range(n)]
+    expected = [bool(a.matrix[r][c]) for r in range(n) for c in range(n)]
+    assert _covered(m, p.base + p.relief, pts) == expected
 
 
-def test_write_stl(tmp_path, matrix):
-    n = len(matrix)
-    tris = core.build_mesh(core.single_cells(matrix, 1.2, 0.8), n, 50 / n)
-    path = tmp_path / "qr.stl"
-    core.write_stl(path, tris)
-    raw = path.read_bytes()
-    (count,) = struct.unpack_from("<I", raw, 80)
-    assert count == len(tris)
-    assert len(raw) == 84 + 50 * count
+def test_frame_layout_and_volume():
+    p, a, m = _model(frame=True, frame_width=3)
+    lay = m.layout
+    assert (lay.width, lay.height) == pytest.approx((p.size + 6, p.size + 6))
+    assert lay.qr_origin == pytest.approx((3, 3))
+    dark = sum(map(sum, a.matrix))
+    plate = lay.width * lay.height
+    frame = plate - p.size * p.size
+    expected = plate * p.base + (dark * a.module ** 2 + frame) * p.relief
+    assert _volume(m) == pytest.approx(expected, rel=1e-4)
 
 
-def test_generate_modes(tmp_path, matrix):
-    files = core.generate(matrix, 50, 1.2, 0.8, "single", str(tmp_path / "a.stl"))
-    assert [os.path.basename(p) for p in files] == ["a.stl"]
-    files = core.generate(matrix, 50, 1.2, 0.8, "split", str(tmp_path / "b.stl"))
-    assert [os.path.basename(p) for p in files] == ["b_base.stl", "b_codigo.stl"]
+def test_text_band_and_fit():
+    shape = core.TextShape([_square(2.0, 1.0)], 2.0)   # «texto» de 2 × 1 (mayúsculas = 1)
+    p, a, m = _model(text="X", text_size=5, text_shape=shape)
+    lay = m.layout
+    assert lay.band == pytest.approx(5 * core.TEXT_BAND)
+    assert lay.height == pytest.approx(p.size + lay.band)
+    assert lay.qr_origin[1] == pytest.approx(lay.band)
+    dark = sum(map(sum, a.matrix))
+    expected = lay.width * lay.height * p.base + (dark * a.module ** 2 + 10 * 5) * p.relief
+    assert _volume(m) == pytest.approx(expected, rel=1e-4)
+    assert m.warnings == []
+
+    wide = core.TextShape([_square(40.0, 1.0)], 40.0)  # no entra: se achica
+    _, _, m = _model(text="X", text_size=5, text_shape=wide)
+    assert any("achicó" in w for w in m.warnings)
+    assert m.vertices[:, 0].min() >= 0 and m.vertices[:, 0].max() <= m.layout.width + 1e-4
 
 
+def test_text_hole_is_kept():
+    outer = _square(1.0, 1.0)
+    hole = (_square(0.5, 0.5, 0.25, 0.25))[::-1]    # sentido opuesto = agujero
+    _, _, solid = _model(text="O", text_size=8, text_shape=core.TextShape([outer], 1.0))
+    _, _, ring = _model(text="O", text_size=8, text_shape=core.TextShape([outer, hole], 1.0))
+    assert _volume(solid) - _volume(ring) == pytest.approx((8 * 0.5) ** 2 * 0.8, rel=1e-4)
+
+
+def test_empty_text_shape_is_ignored():
+    _, _, a = _model(text="X", text_shape=core.TextShape([], 0.0))
+    assert a.num_triangles > 0 and _edge_balance(a.triangles) == {}
+
+
+def test_write_stl(tmp_path):
+    _, _, m = _model()
+    path = core.export_stl(m, str(tmp_path / "qr"))
+    assert path.endswith("qr.stl")
+    data = open(path, "rb").read()
+    (count,) = struct.unpack_from("<I", data, 80)
+    assert count == m.num_triangles and len(data) == 84 + 50 * count
+    n = np.frombuffer(data[84:84 + 12], dtype="<f4")
+    assert np.linalg.norm(n) == pytest.approx(1.0, abs=1e-5)
+
+
+# ---------------------------------------------------------------- pausa
 @pytest.mark.parametrize("base, layer, first, expected_n, expected_z", [
     (1.2, 0.2, None, 6, 1.2),    # caso por defecto: 6 capas de base, pausa layer = 6
     (1.2, 0.2, 0.2, 6, 1.2),
@@ -136,6 +175,7 @@ def test_pause_layer(base, layer, first, expected_n, expected_z):
     assert z == pytest.approx(expected_z)
 
 
+# ---------------------------------------------------------------- análisis
 def test_analyze_defaults():
     a = core.analyze(core.Params(url=URL))
     assert a.pause_layer == 6 and a.pause_z == pytest.approx(1.2)
@@ -144,22 +184,28 @@ def test_analyze_defaults():
 
 @pytest.mark.parametrize("kwargs, fragment", [
     ({"size": 20}, "módulo chico"),
-    ({"relief": 0.2}, "1 sola capa"),
+    ({"relief": 0.2}, "una sola capa"),
     ({"relief": 0.5}, "no es múltiplo"),
     ({"base": 1.1}, "borde de capa"),
     ({"first_layer": 0.3}, "borde de capa"),
+    ({"frame": True, "border": 0}, "marco"),
+    ({"text": "hola", "text_size": 3}, "texto"),
+    ({"corner_radius": 40}, "radio"),
     ({"border": 0}, None),
+    ({"frame": True, "text": "hola"}, None),
 ])
 def test_analyze_warnings(kwargs, fragment):
     a = core.analyze(core.Params(url=URL, **kwargs))
     if fragment is None:
         assert a.warnings == []
     else:
-        assert any(fragment in w for w in a.warnings)
+        assert any(fragment in w.lower() for w in a.warnings), a.warnings
 
 
-@pytest.mark.parametrize("kwargs", [{"url": "  "}, {"size": 0}, {"url": "x" * 5000}])
+@pytest.mark.parametrize("kwargs", [
+    {"url": "  "}, {"size": 0}, {"url": "x" * 5000},
+    {"frame": True, "frame_width": 0}, {"text": "hola", "text_size": 0},
+])
 def test_analyze_invalid(kwargs):
     with pytest.raises(ValueError):
         core.analyze(core.Params(**{"url": URL, **kwargs}))
-

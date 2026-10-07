@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-core:
     name: Tests del núcleo (Linux, sin GUI)
@@ -19,6 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - run: pip install -e ".[dev]"
       - run: pytest -q
 
@@ -41,27 +46,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - run: pip install -e ".[gui,dev,build]"
-      - name: Tests (con GUI offscreen)
+
+      - name: Tests (GUI offscreen)
         run: pytest -q
         env:
           QT_QPA_PLATFORM: offscreen
 
-      - name: PyInstaller (Windows, onefile)
-        if: runner.os == 'Windows'
-        run: |
-          pyinstaller --noconfirm --onefile --windowed --name qr2stl src/qr2stl/__main__.py
-          $p = Start-Process dist/qr2stl.exe -ArgumentList '--selftest' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "selftest falló: $($p.ExitCode)" }
-          Compress-Archive dist/qr2stl.exe ${{ matrix.artifact }}.zip
-
-      - name: PyInstaller (macOS, .app)
-        if: runner.os == 'macOS'
-        run: |
-          pyinstaller --noconfirm --windowed --name qr2stl \
-            --osx-bundle-identifier io.github.esteban-plaza.qr2stl src/qr2stl/__main__.py
-          dist/qr2stl.app/Contents/MacOS/qr2stl --selftest
-          ditto -c -k --sequesterRsrc --keepParent dist/qr2stl.app ${{ matrix.artifact }}.zip
+      # PyInstaller + poda de Qt + --selftest del ejecutable + zip
+      - name: Empaquetar
+        run: python tools/build_app.py --zip ${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v4
         with:
