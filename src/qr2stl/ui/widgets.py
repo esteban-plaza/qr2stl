@@ -207,17 +207,122 @@ class SegmentedControl(QWidget):
             p.fillRect(self.rect(), with_alpha(self.palette().color(QPalette.Window), 0.5))
 
 
+# ---------------------------------------------------------------- volver al default
+class ResetButton(QAbstractButton):
+    """Flechita circular para volver al valor por defecto. Aparece (fade + escala) solo
+    cuando el valor difiere del default; mientras tanto ocupa su lugar sin verse, así el
+    layout no salta."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(20, 20)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._shown = 0.0
+        self._hover = 0.0
+        self._spin = 0.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(MEDIUM)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.valueChanged.connect(self._set_shown)
+        self._hanim = QVariantAnimation(self)
+        self._hanim.setDuration(FAST)
+        self._hanim.valueChanged.connect(self._set_hover)
+        self._ranim = QVariantAnimation(self)   # gira una vuelta al apretarlo
+        self._ranim.setDuration(420)
+        self._ranim.setEasingCurve(QEasingCurve.OutCubic)
+        self._ranim.setStartValue(0.0)
+        self._ranim.setEndValue(-360.0)
+        self._ranim.valueChanged.connect(self._set_spin)
+        self.pressed.connect(self._ranim.start)
+        self.setEnabled(False)
+
+    def _set_shown(self, v):
+        self._shown = v
+        self.update()
+
+    def _set_hover(self, v):
+        self._hover = v
+        self.update()
+
+    def _set_spin(self, v):
+        self._spin = v
+        self.update()
+
+    def setShown(self, on, animate=True):
+        if on == self.isEnabled() and (self._anim.state() == QVariantAnimation.Running
+                                       or self._shown == (1.0 if on else 0.0)):
+            return
+        self.setEnabled(on)
+        self.setCursor(Qt.PointingHandCursor if on else Qt.ArrowCursor)
+        if not animate or not self.isVisible():
+            self._anim.stop()
+            self._set_shown(1.0 if on else 0.0)
+            return
+        self._anim.stop()
+        self._anim.setStartValue(self._shown)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def isShown(self):
+        return self.isEnabled()
+
+    def enterEvent(self, _event):
+        self._hanim.stop()
+        self._hanim.setStartValue(self._hover)
+        self._hanim.setEndValue(1.0)
+        self._hanim.start()
+
+    def leaveEvent(self, _event):
+        self._hanim.stop()
+        self._hanim.setStartValue(self._hover)
+        self._hanim.setEndValue(0.0)
+        self._hanim.start()
+
+    def paintEvent(self, _event):
+        if self._shown <= 0.01:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setOpacity(self._shown)
+        c = QPointF(self.width() / 2, self.height() / 2)
+        if self._hover > 0:
+            p.setPen(Qt.NoPen)
+            p.setBrush(with_alpha(accent(self), 0.15 * self._hover))
+            p.drawEllipse(c, 10, 10)
+        p.translate(c)
+        p.scale(0.6 + 0.4 * self._shown, 0.6 + 0.4 * self._shown)
+        p.rotate(self._spin)
+        color = mix(secondary_text(self), accent(self), self._hover)
+        p.setPen(QPen(color, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        r = 5.0
+        p.drawArc(QRectF(-r, -r, 2 * r, 2 * r), 100 * 16, 290 * 16)
+        # punta de flecha al final del arco (arriba, apuntando a la izquierda)
+        tip = QPointF(-0.9, -r)
+        path = QPainterPath(tip + QPointF(3.2, -2.6))
+        path.lineTo(tip)
+        path.lineTo(tip + QPointF(3.0, 2.8))
+        p.drawPath(path)
+
+
 # ---------------------------------------------------------------- slider + número
 class SliderField(QWidget):
-    """Etiqueta, campo numérico y slider sincronizados. Emite `valueChanged(float)`."""
+    """Etiqueta, campo numérico, botón para volver al default y slider sincronizados.
+    Emite `valueChanged(float)`.
+
+    Con `strict=True` solo acepta valores de la grilla `lo + k * step` (también los que se
+    escriben a mano); ver `configure`."""
     valueChanged = Signal(float)
 
     def __init__(self, label, value, lo, hi, step, decimals=1, suffix=" mm", tooltip="",
-                 parent=None):
+                 default=None, parent=None):
         super().__init__(parent)
         self._step = step
         self._lo = lo
+        self._strict = False
         self._sync = False
+        self._decimals = decimals
+        self._default = value if default is None else default
 
         self.label = QLabel(label)
         self.spin = QDoubleSpinBox()
@@ -232,13 +337,17 @@ class SliderField(QWidget):
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, round((hi - lo) / step))
         self.slider.setCursor(Qt.PointingHandCursor)
+        self.reset_btn = ResetButton()
+        self.reset_btn.clicked.connect(self.reset)
         if tooltip:
             for w in (self.label, self.spin, self.slider):
                 w.setToolTip(tooltip)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(4)
         top.addWidget(self.label, 1)
+        top.addWidget(self.reset_btn)
         top.addWidget(self.spin)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
@@ -253,18 +362,67 @@ class SliderField(QWidget):
 
         self.slider.valueChanged.connect(self._from_slider)
         self.spin.valueChanged.connect(self._from_spin)
+        self.valueChanged.connect(self._update_reset)
         self.setValue(value, animate=False)
+        self.setDefault(self._default)
 
+    # -------------------------------------------------- valor
     def value(self):
         return self.spin.value()
 
     def setValue(self, v, animate=True):
+        if self._strict:
+            v = self.snap(v)
         self._sync = True
         self.spin.setValue(v)
         self._sync = False
-        self._slide_to(v, animate)
+        self._slide_to(self.spin.value(), animate)
         self.valueChanged.emit(self.spin.value())
 
+    def snap(self, v):
+        k = round((v - self._lo) / self._step)
+        k = max(0, min(self.slider.maximum(), k))
+        return round(self._lo + k * self._step, 6)
+
+    # -------------------------------------------------- default
+    def default(self):
+        return self._default
+
+    def setDefault(self, v):
+        self._default = v
+        self._update_reset()
+        self.reset_btn.setToolTip(f"Volver a {self._fmt(self._default)}")
+
+    def isDefault(self):
+        target = self.snap(self._default) if self._strict else self._default
+        return abs(self.value() - target) < 0.5 * 10 ** -self._decimals
+
+    def reset(self, animate=True):
+        self.setValue(self._default, animate)
+
+    def _update_reset(self, *_):
+        self.reset_btn.setShown(not self.isDefault())
+
+    def _fmt(self, v):
+        return f"{v:.{self._decimals}f}".replace(".", ",") + self.spin.suffix()
+
+    # -------------------------------------------------- grilla
+    def configure(self, lo, hi, step, strict=False, animate=True):
+        """Cambia el rango y el paso. Con `strict`, el valor actual se lleva al punto más
+        cercano de la grilla."""
+        current = self.value()
+        self._lo, self._step, self._strict = lo, step, strict
+        self._sync = True
+        self.spin.setRange(lo, hi)
+        self.spin.setSingleStep(step)
+        self.slider.setRange(0, max(1, int(round((hi - lo) / step))))
+        self._sync = False
+        self.setValue(current, animate)
+
+    def isStrict(self):
+        return self._strict
+
+    # -------------------------------------------------- sincronización
     def _slide_to(self, v, animate):
         target = round((v - self._lo) / self._step)
         if animate and self.isVisible():
@@ -273,6 +431,7 @@ class SliderField(QWidget):
             self._anim.setEndValue(float(target))
             self._anim.start()
         else:
+            self._anim.stop()
             self._set_slider(target)
 
     def _set_slider(self, i):
@@ -284,13 +443,18 @@ class SliderField(QWidget):
         if self._sync:
             return
         self._sync = True
-        self.spin.setValue(self._lo + i * self._step)
+        self.spin.setValue(round(self._lo + i * self._step, 6))
         self._sync = False
         self.valueChanged.emit(self.spin.value())
 
     def _from_spin(self, v):
         if self._sync:
             return
+        if self._strict and abs(self.snap(v) - v) > 1e-9:
+            self._sync = True
+            self.spin.setValue(self.snap(v))   # escrito a mano fuera de la grilla
+            self._sync = False
+            v = self.spin.value()
         self._slide_to(v, True)  # escrito a mano: el slider viaja hasta el valor
         self.valueChanged.emit(v)
 

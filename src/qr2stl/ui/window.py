@@ -4,17 +4,18 @@ import subprocess
 import sys
 from urllib.parse import urlparse
 
-from PySide6.QtCore import (QEasingCurve, QPropertyAnimation, QRectF, QSettings, QSize, Qt,
-                            QTimer, QUrl, QVariantAnimation, Signal)
-from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QFontDatabase, QKeySequence, QPainter,
-                           QPalette)
-from PySide6.QtWidgets import (QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
+from PySide6.QtCore import (QEasingCurve, QEvent, QPropertyAnimation, QRectF, QSettings, QSize,
+                            Qt, QTimer, QUrl, QVariantAnimation, Signal)
+from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QFontDatabase, QKeySequence,
+                           QPainter, QPalette, QPen)
+from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget,
-                               QToolBar, QVBoxLayout, QWidget)
+                               QVBoxLayout, QWidget)
 
 from .. import __version__, core, gcode
 from ..textshape import text_shape
+from . import macwindow
 from .viewer import Viewer
 from .widgets import (Banner, ColorWell, DropZone, Section, SegmentedControl, Separator,
                       SliderField, Toast, ToggleSwitch, accent, caption, mix, with_alpha)
@@ -93,6 +94,95 @@ class PrimaryButton(QPushButton):
         p.setPen(QColor("white") if self.isEnabled() else
                  with_alpha(self.palette().color(QPalette.WindowText), 0.4))
         p.drawText(r, Qt.AlignCenter, self.text())
+
+
+class SecondaryButton(PrimaryButton):
+    """Botón neutro (gris translúcido), mismo comportamiento animado que el principal."""
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        text = self.palette().color(QPalette.WindowText)
+        fill = with_alpha(text, 0.07 + 0.05 * self._hover + 0.06 * self._press)
+        inset = 1.2 * self._press
+        r = QRectF(self.rect()).adjusted(inset + 0.5, inset + 0.5, -inset - 0.5, -inset - 0.5)
+        p.setPen(QPen(with_alpha(text, 0.10), 1))
+        p.setBrush(fill)
+        p.drawRoundedRect(r, 7, 7)
+        p.setPen(text if self.isEnabled() else with_alpha(text, 0.35))
+        f = self.font()
+        f.setWeight(QFont.Medium)
+        p.setFont(f)
+        p.drawText(r, Qt.AlignCenter, self.text())
+
+
+class TitleBar(QWidget):
+    """Barra superior de la ventana. Arrastrarla mueve la ventana y el doble clic la
+    agranda, como una barra de título nativa."""
+
+    def __init__(self, window, parent=None):
+        super().__init__(parent)
+        self._window = window
+        self.setFixedHeight(48)
+        self._lights = QWidget()
+        self._lights.setFixedWidth(16)
+        self.title = QLabel("qr2stl")
+        f = self.title.font()
+        f.setWeight(QFont.Bold)
+        f.setPointSizeF(f.pointSizeF() + 1)
+        self.title.setFont(f)
+        self.subtitle = QLabel("QR imprimibles en 3D")
+        self.subtitle.setForegroundRole(QPalette.PlaceholderText)
+        self._right = QHBoxLayout()
+        self._right.setSpacing(8)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 14, 0)
+        lay.setSpacing(10)
+        lay.addWidget(self._lights)
+        lay.addWidget(self.title)
+        lay.addWidget(self.subtitle)
+        lay.addStretch(1)
+        lay.addLayout(self._right)
+        self._anim = QPropertyAnimation(self._lights, b"minimumWidth", self)
+        self._anim.setDuration(260)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.valueChanged.connect(lambda v: self._lights.setMaximumWidth(int(v)))
+
+    def add_right(self, w):
+        self._right.addWidget(w)
+
+    def set_unified(self, on):
+        """Con la barra unificada de macOS: más alta y con lugar para los semáforos."""
+        self.setFixedHeight(macwindow.TITLEBAR_HEIGHT if on else 48)
+        self.set_traffic_lights(on, animate=False)
+
+    def set_traffic_lights(self, on, animate=True):
+        w = macwindow.TRAFFIC_LIGHTS_WIDTH if on else 6
+        if animate and self.isVisible():
+            self._anim.stop()
+            self._anim.setStartValue(self._lights.width())
+            self._anim.setEndValue(w)
+            self._anim.start()
+        else:
+            self._lights.setFixedWidth(w)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._window.windowHandle() is not None:
+            self._window.windowHandle().startSystemMove()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self._window.isMaximized():
+                self._window.showNormal()
+            else:
+                self._window.showMaximized()
+        super().mouseDoubleClickEvent(event)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.fillRect(QRectF(0, self.height() - 1, self.width(), 1),
+                   with_alpha(self.palette().color(QPalette.WindowText), 0.12))
 
 
 class FadeStack(QStackedWidget):
@@ -195,7 +285,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("qr2stl")
-        self.setUnifiedTitleAndToolBarOnMac(True)
         self.resize(1180, 760)
         self.setMinimumSize(860, 560)
         self.settings = QSettings()
@@ -216,10 +305,21 @@ class MainWindow(QMainWindow):
         split.setCollapsible(1, False)
         split.setHandleWidth(1)
         split.setSizes([800, 360])
-        self.setCentralWidget(split)
+        self.title_bar = self._title_bar()
+        central = QWidget()
+        cl = QVBoxLayout(central)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        cl.addWidget(self.title_bar)
+        cl.addWidget(split, 1)
+        self.setCentralWidget(central)
+        # La barra de título transparente cuenta como «zona insegura» y Qt correría todo
+        # el contenido hacia abajo; la barra propia ya deja lugar para los semáforos.
+        self.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
+        central.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
         self.toast = Toast(self, self.viewer)  # hijo de la ventana: el QSplitter lo haría panel
+        self._unified = False
 
-        self._toolbar()
         self._menus()
 
         self._timer = QTimer(self)
@@ -236,21 +336,20 @@ class MainWindow(QMainWindow):
         self.rebuild()
 
     # ------------------------------------------------------------ toolbar y menús
-    def _toolbar(self):
-        tb = QToolBar("Herramientas")
-        tb.setMovable(False)
-        tb.setFloatable(False)
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        tb.addWidget(spacer)
+    def _title_bar(self):
+        """Barra superior única: en macOS va debajo de la barra de título transparente, con
+        los semáforos a la izquierda (ver macwindow.py); en Windows/Linux hace de toolbar."""
+        bar = TitleBar(self)
         self.export_btn = PrimaryButton("Exportar STL…")
         self.export_btn.setToolTip("Guardar el modelo como STL (⌘E)")
         self.export_btn.clicked.connect(self.export_stl)
-        tb.addWidget(self.export_btn)
-        pad = QWidget()
-        pad.setFixedWidth(8)
-        tb.addWidget(pad)
-        self.addToolBar(tb)
+        self.reset_all_btn = SecondaryButton("Restablecer todo")
+        self.reset_all_btn.setToolTip("Volver todos los valores a los de fábrica (⇧⌘R). "
+                                      "La URL y el texto no se tocan.")
+        self.reset_all_btn.clicked.connect(self.reset_defaults)
+        bar.add_right(self.reset_all_btn)
+        bar.add_right(self.export_btn)
+        return bar
 
     def _menus(self):
         mb = self.menuBar()
@@ -264,7 +363,8 @@ class MainWindow(QMainWindow):
         gc.triggered.connect(self.choose_gcode)
         file.addAction(gc)
         file.addSeparator()
-        reset = QAction("Restablecer valores", self)
+        reset = QAction("Restablecer todos los valores", self)
+        reset.setShortcut(QKeySequence("Ctrl+Shift+R"))
         reset.triggered.connect(self.reset_defaults)
         file.addAction(reset)
 
@@ -339,6 +439,14 @@ class MainWindow(QMainWindow):
                                             tooltip="Conviene que sea múltiplo de la altura de capa."))
         self.relief = s.addWidget(SliderField("Relieve", d.relief, 0.2, 4, 0.04, 2,
                                               tooltip="Código, marco y texto. Al menos 2 capas."))
+        self.relief_snap = QCheckBox("Solo múltiplos de la altura de capa")
+        self.relief_snap.setChecked(True)
+        self.relief_snap.setToolTip("El slider y el campo saltan de a una capa, así el relieve "
+                                    "siempre termina justo en un borde de capa.")
+        f = self.relief_snap.font()
+        f.setPointSizeF(max(9.0, f.pointSizeF() - 1.5))
+        self.relief_snap.setFont(f)
+        s.addWidget(self.relief_snap)
         lay.addWidget(s)
         lay.addWidget(Separator())
 
@@ -498,11 +606,26 @@ class MainWindow(QMainWindow):
         self.frame_section.toggled.connect(self.schedule)
         self.text_section.toggled.connect(self._on_text_toggled)
         self.printer.currentChanged.connect(self._on_printer)
+        self.relief_snap.toggled.connect(lambda _: (self._apply_relief_grid(), self.schedule()))
+        self.layer.valueChanged.connect(lambda _: self._apply_relief_grid())
         self.plate_color.colorChanged.connect(self._colors_changed)
         self.code_color.colorChanged.connect(self._colors_changed)
         for s in (self.park_x, self.park_y, self.lift, self.retract, self.purge):
             s.valueChanged.connect(self._save_timer.start)
         self.viewer.set_colors(self.plate_color.color(), self.code_color.color())
+
+    def _apply_relief_grid(self, animate=True):
+        """Con el check prendido, el relieve se mueve de a una capa (y su default es el
+        múltiplo más cercano a 0,8 mm); apagado, de a 0,04 mm."""
+        d = core.Params()
+        if self.relief_snap.isChecked():
+            layer = self.layer.value()
+            hi = max(layer, int(4.0 / layer + 1e-9) * layer)
+            self.relief.configure(layer, hi, layer, strict=True, animate=animate)
+            self.relief.setDefault(max(layer, round(d.relief / layer) * layer))
+        else:
+            self.relief.configure(0.2, 4, 0.04, strict=False, animate=animate)
+            self.relief.setDefault(d.relief)
 
     def _on_text_toggled(self, on):
         if on and not self.text.text().strip():
@@ -670,6 +793,7 @@ class MainWindow(QMainWindow):
         for k in self._KEYS:
             s.setValue(f"p/{k}", getattr(self, k).value())
         s.setValue("p/ecc", self.ecc.currentIndex())
+        s.setValue("p/relief_snap", self.relief_snap.isChecked())
         s.setValue("p/frame", self.frame_section.switch.isChecked())
         s.setValue("p/text_on", self.text_section.switch.isChecked())
         s.setValue("p/text", self.text.text())
@@ -681,7 +805,7 @@ class MainWindow(QMainWindow):
         for k in ("park_x", "park_y", "lift", "retract", "purge"):
             s.setValue(f"pause/{k}", getattr(self, k).value())
 
-    def restore_settings(self):
+    def restore_settings(self, animate=False):
         s = self.settings
 
         def num(key, default):
@@ -695,18 +819,23 @@ class MainWindow(QMainWindow):
             return v in (True, "true", "1", 1) if not isinstance(v, bool) else v
 
         self.url.setText(s.value("p/url", self.url.text()))
-        for k in self._KEYS:
+        # primero la capa y el check: definen la grilla del relieve
+        keys = ["layer", "first_layer"] + [k for k in self._KEYS if k not in ("layer", "first_layer")]
+        for k in keys:
+            if k == "relief":
+                self.relief_snap.setChecked(flag("p/relief_snap", True))
+                self._apply_relief_grid(animate=False)
             w = getattr(self, k)
-            w.setValue(num(f"p/{k}", w.value()), animate=False)
-        self.ecc.setCurrentIndex(int(num("p/ecc", self.ecc.currentIndex())), animate=False)
+            w.setValue(num(f"p/{k}", w.value()), animate=animate)
+        self.ecc.setCurrentIndex(int(num("p/ecc", self.ecc.currentIndex())), animate=animate)
         frame = flag("p/frame", False)
         self.frame_section.switch.setChecked(frame)
-        self.frame_section.setExpanded(frame, animate=False)
+        self.frame_section.setExpanded(frame, animate=animate)
         self.frame_section.body.setEnabled(frame)
         self.text.setText(s.value("p/text", ""))
         text_on = flag("p/text_on", False)
         self.text_section.switch.setChecked(text_on)
-        self.text_section.setExpanded(text_on, animate=False)
+        self.text_section.setExpanded(text_on, animate=animate)
         self.text_section.body.setEnabled(text_on)
         family = s.value("p/font", "")
         if family:
@@ -721,19 +850,57 @@ class MainWindow(QMainWindow):
             w = getattr(self, k)
             w.setValue(num(f"pause/{k}", w.value()))
 
+    def snapshot(self):
+        """Todos los valores actuales, como los guarda QSettings (para deshacer)."""
+        self.save_settings()
+        return {k: self.settings.value(k) for k in self.settings.allKeys()
+                if k.startswith(("p/", "pause/"))}
+
+    def apply_snapshot(self, snap):
+        for k, v in snap.items():
+            self.settings.setValue(k, v)
+        self._restoring = True
+        self.restore_settings(animate=True)
+        self._restoring = False
+        self.schedule()
+
     def reset_defaults(self):
+        """Vuelve todos los valores a los de fábrica (animados). No toca la URL, el texto
+        ni la impresora elegida. Se puede deshacer desde el aviso."""
+        before = self.snapshot()
         d = core.Params()
-        for k, v in (("size", d.size), ("border", d.border), ("radius", d.corner_radius),
-                     ("base", d.base), ("relief", d.relief), ("frame_width", d.frame_width),
-                     ("text_size", d.text_size), ("layer", d.layer),
-                     ("first_layer", d.first_layer)):
-            getattr(self, k).setValue(v)  # los sliders viajan animados a su valor
+        self.layer.setValue(d.layer)
+        self.first_layer.setValue(d.first_layer)
+        self.relief_snap.setChecked(True)
+        self._apply_relief_grid()
+        for w in self._sliders():
+            w.reset()                       # los sliders viajan animados a su valor
         self.ecc.setCurrentIndex(ECC_KEYS.index(d.ecc))
         self.frame_section.switch.setChecked(False)
         self.text_section.switch.setChecked(False)
+        self.font_box.setCurrentFont(QFont(default_font_family()))
+        self.bold.setChecked(True)
         self._set_colors(*COLOR_PRESETS[0])
+        p = gcode.PauseSettings()
+        for k in ("park_x", "park_y", "lift", "retract", "purge"):
+            getattr(self, k).setValue(getattr(p, k))
+        if self.snapshot() != before:
+            self.toast.show_message("Valores restablecidos", "Deshacer",
+                                    lambda: self.apply_snapshot(before), ms=6000)
 
     # ------------------------------------------------------------ eventos
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._unified and macwindow.supported():
+            self._unified = macwindow.unify_title_bar(self)
+            self.title_bar.set_unified(self._unified)
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.WindowStateChange and self._unified:
+            # en pantalla completa no hay semáforos: el título se corre a la izquierda
+            self.title_bar.set_traffic_lights(not self.isFullScreen())
+        super().changeEvent(event)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.toast.reposition()

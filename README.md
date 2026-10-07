@@ -24,7 +24,10 @@ xattr -dr com.apple.quarantine qr2stl.app
 
 ## Uso
 
-La ventana tiene la vista 3D a la izquierda y el inspector a la derecha. Cada cambio se ve al instante en la vista previa.
+La ventana tiene una sola barra arriba (en macOS, integrada con la barra de título), la vista 3D a la izquierda y el inspector a la derecha. Cada cambio se ve al instante en la vista previa.
+
+- Cada slider muestra una flechita **↺** cuando su valor difiere del de fábrica: un clic y vuelve, animado.
+- **Restablecer todo** (⇧⌘R) vuelve todos los valores a los de fábrica, salvo la URL, el texto y la impresora elegida. El aviso que aparece tiene **Deshacer**.
 
 ### Vista previa 3D
 
@@ -42,7 +45,7 @@ La ventana tiene la vista 3D a la izquierda y el inspector a la derecha. Cada ca
 | | Borde blanco | 2 módulos | El estándar pide 4; con la base de otro color, 2 alcanza |
 | | Esquinas redondeadas | 0 mm | Radio de la placa; el marco lo sigue |
 | Alturas | Espesor de la base | 1,2 mm | Conviene que sea múltiplo de la altura de capa |
-| | Relieve | 0,8 mm | Múltiplo de la altura de capa, y ≥ 2 capas |
+| | Relieve | 0,8 mm | Con **Solo múltiplos de la altura de capa** (prendido por defecto) el slider y el campo van de a una capa |
 | Marco | Ancho | 2 mm | Se agrega alrededor del QR, en relieve |
 | Texto debajo | Texto, fuente, negrita | — | Fuentes del sistema; se vectoriza con Qt |
 | | Alto de las mayúsculas | 6 mm | Si no entra a lo ancho, se achica solo (y avisa) |
@@ -98,6 +101,7 @@ src/qr2stl/
   textshape.py   vectoriza texto con las fuentes del sistema (QPainterPath)
   app.py         punto de entrada (--selftest para CI)
   ui/
+    macwindow.py barra de título unificada en macOS (AppKit por ctypes)
     window.py    ventana principal: inspector, toolbar, menús, exportación, preferencias
     widgets.py   widgets animados: switch, control segmentado, slider+campo, secciones
                  desplegables, banner de avisos, toast, zona de drop, selector de color
@@ -116,6 +120,7 @@ tools/
 
 ### Interfaz
 
+- En macOS la ventana usa `fullSizeContentView` con la barra de título transparente y una `NSToolbar` vacía (estilo *unified*, 52 px), configurada por ctypes: PySide 6.11 no expone `Qt::ExpandedClientAreaHint`. Así los semáforos quedan dentro de la barra propia de la app, que se puede arrastrar y agranda la ventana con doble clic.
 - Qt Widgets para el inspector (sigue el modo claro/oscuro y el color de acento del sistema) y Qt Quick 3D para la vista previa, embebida con `QQuickWidget`. Quick 3D usa RHI: Metal en macOS y Direct3D 11 en Windows.
 - Animaciones con el framework de Qt (`QPropertyAnimation`, `QVariantAnimation`, grupos paralelos) en los widgets, y `Behavior` / `FrameAnimation` en QML.
 

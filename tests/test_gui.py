@@ -120,6 +120,53 @@ def test_settings_are_remembered(app):
     assert w2.printer.currentIndex() == 1 and w2.printer_stack.currentIndex() == 1
 
 
+def test_relief_snaps_to_layer_multiples_by_default(win):
+    assert win.relief_snap.isChecked()
+    assert win.relief.value() == pytest.approx(0.8)
+    win.relief.slider.setValue(win.relief.slider.value() + 1)   # una capa más
+    assert win.relief.value() == pytest.approx(1.0)
+    win.relief.spin.setValue(0.9)                                # escrito a mano: se ajusta
+    assert win.relief.value() == pytest.approx(round(0.9 / 0.2) * 0.2)
+    win.layer.setValue(0.12, animate=False)                      # cambia la grilla
+    v = win.relief.value()
+    assert abs(v / 0.12 - round(v / 0.12)) < 1e-6
+    assert win.relief.default() == pytest.approx(0.84)           # múltiplo más cercano a 0,8
+    win.relief_snap.setChecked(False)                            # sin el check: pasos finos
+    win.relief.spin.setValue(0.9)
+    assert win.relief.value() == pytest.approx(0.9)
+
+
+def test_reset_button_per_slider(win):
+    assert not win.size.reset_btn.isShown()
+    win.size.setValue(70, animate=False)
+    assert win.size.reset_btn.isShown()
+    win.size.reset_btn.click()
+    assert win.size.value() == pytest.approx(core.Params().size)
+    assert not win.size.reset_btn.isShown()
+
+
+def test_reset_all_and_undo(win):
+    win.url.setText("https://queda.com")
+    win.size.setValue(90, animate=False)
+    win.border.setValue(4, animate=False)
+    win.frame_section.switch.setChecked(True)
+    win.relief_snap.setChecked(False)
+    win.relief.setValue(1.32, animate=False)
+    win.park_x.setValue(100)
+    win.reset_defaults()
+    d = core.Params()
+    assert win.size.value() == pytest.approx(d.size) and win.border.value() == d.border
+    assert win.relief.value() == pytest.approx(d.relief) and win.relief_snap.isChecked()
+    assert not win.frame_section.switch.isChecked() and win.park_x.value() == 0
+    assert win.url.text() == "https://queda.com"                 # el contenido no se toca
+    assert all(not s.reset_btn.isShown() for s in win._sliders())
+    assert win.toast.action.text() == "Deshacer"
+    win.toast._callback()                                        # Deshacer
+    assert win.size.value() == pytest.approx(90) and win.border.value() == 4
+    assert win.frame_section.switch.isChecked() and not win.relief_snap.isChecked()
+    assert win.relief.value() == pytest.approx(1.32) and win.park_x.value() == 100
+
+
 def test_multicolor_export_is_disabled(win):
     assert not win.multicolor.isEnabled() and not win.multicolor.isChecked()
 
