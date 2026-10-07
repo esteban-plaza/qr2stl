@@ -205,7 +205,8 @@ def _plist_set(path, values):
 def selftest():
     exe = executable()
     print(f"selftest: {exe}")
-    res = subprocess.run([str(exe), "--selftest"], capture_output=True, text=True, timeout=180)
+    res = subprocess.run([str(exe), "--selftest"], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", timeout=180)
     print(res.stdout, res.stderr)
     if res.returncode != 0:
         sys.exit(f"selftest falló (código {res.returncode})")
@@ -223,6 +224,8 @@ def make_zip(name):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):   # la consola de Windows usa cp1252
+        stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--zip", metavar="NAME", help="crear NAME.zip con el resultado")
     ap.add_argument("--skip-selftest", action="store_true")
