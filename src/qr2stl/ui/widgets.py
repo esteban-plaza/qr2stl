@@ -4,8 +4,8 @@ from PySide6.QtCore import (Property, QEasingCurve, QEvent, QParallelAnimationGr
                             Signal)
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPalette, QPen
 from PySide6.QtWidgets import (QAbstractButton, QColorDialog, QDoubleSpinBox, QFileDialog,
-                               QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QSizePolicy,
-                               QSlider, QVBoxLayout, QWidget)
+                               QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPlainTextEdit,
+                               QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 QWIDGETSIZE_MAX = 16777215
 FAST = 160
@@ -608,6 +608,70 @@ class Section(QWidget):
         group.start()
 
 
+class Reveal(QWidget):
+    """Contenedor que aparece y desaparece animando la altura y la opacidad."""
+
+    def __init__(self, shown=True, parent=None):
+        super().__init__(parent)
+        self.content = QVBoxLayout(self)
+        self.content.setContentsMargins(0, 0, 0, 0)
+        self.content.setSpacing(8)
+        self._shown = shown
+        self._group = None
+        if not shown:
+            self.setMaximumHeight(0)
+            self.hide()
+
+    def addWidget(self, w):
+        self.content.addWidget(w)
+        return w
+
+    def isRevealed(self):
+        return self._shown
+
+    def setRevealed(self, on, animate=True):
+        if on == self._shown and self._group is None:
+            return
+        self._shown = on
+        if self._group is not None:
+            self._group.stop()
+            self._group = None
+        if not animate or not self.parentWidget() or not self.parentWidget().isVisible():
+            self.setGraphicsEffect(None)
+            self.setMaximumHeight(QWIDGETSIZE_MAX if on else 0)
+            self.setVisible(on)
+            return
+        self.show()
+        start = self.height() if self.maximumHeight() else 0
+        end = self.sizeHint().height() if on else 0
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        group = QParallelAnimationGroup(self)
+        h = QPropertyAnimation(self, b"maximumHeight")
+        h.setDuration(MEDIUM)
+        h.setStartValue(start)
+        h.setEndValue(end)
+        h.setEasingCurve(QEasingCurve.OutCubic if on else QEasingCurve.InOutCubic)
+        o = QPropertyAnimation(effect, b"opacity")
+        o.setDuration(MEDIUM)
+        o.setStartValue(0.0 if on else 1.0)
+        o.setEndValue(1.0 if on else 0.0)
+        group.addAnimation(h)
+        group.addAnimation(o)
+
+        def done():
+            self._group = None
+            self.setGraphicsEffect(None)
+            if on:
+                self.setMaximumHeight(QWIDGETSIZE_MAX)
+            else:
+                self.hide()
+
+        group.finished.connect(done)
+        self._group = group
+        group.start()
+
+
 class Separator(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -888,6 +952,55 @@ class DropZone(QWidget):
         p.setFont(self.font())
         p.setPen(idle)
         p.drawText(QRectF(r.left(), r.top() + 68, r.width(), 20), Qt.AlignCenter, self.subtitle)
+
+
+# ---------------------------------------------------------------- texto multilínea
+class MultiLineEdit(QPlainTextEdit):
+    """Campo de texto de varias líneas que crece (animado) con cada renglón, hasta
+    `max_lines` visibles; después hace scroll. Misma API que QLineEdit para el texto."""
+    textEdited = Signal(str)
+
+    def __init__(self, max_lines=4, parent=None):
+        super().__init__(parent)
+        self.max_lines = max_lines
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setTabChangesFocus(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(FAST)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.valueChanged.connect(lambda v: self.setFixedHeight(int(v)))
+        self.setFixedHeight(self._height_for(1))
+        self.textChanged.connect(self._on_change)
+
+    def text(self):
+        return self.toPlainText()
+
+    def setText(self, text):
+        if text != self.toPlainText():
+            self.setPlainText(text)
+
+    def lineCount(self):
+        return max(1, self.document().blockCount())
+
+    def _height_for(self, lines):
+        fm = self.fontMetrics()
+        margins = self.contentsMargins()
+        doc = self.document().documentMargin()
+        return int(fm.lineSpacing() * lines + 2 * doc + margins.top() + margins.bottom() + 2)
+
+    def _on_change(self):
+        target = self._height_for(min(self.lineCount(), self.max_lines))
+        if target != self.height():
+            if self.isVisible():
+                self._anim.stop()
+                self._anim.setStartValue(float(self.height()))
+                self._anim.setEndValue(float(target))
+                self._anim.start()
+            else:
+                self.setFixedHeight(target)
+        self.textEdited.emit(self.toPlainText())
 
 
 # ---------------------------------------------------------------- color

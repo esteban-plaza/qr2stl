@@ -134,6 +134,125 @@ def test_text_band_and_fit():
     assert m.vertices[:, 0].min() >= 0 and m.vertices[:, 0].max() <= m.layout.width + 1e-4
 
 
+def test_square_plate_with_text():
+    shape = core.TextShape([_square(2.0, 1.0)], 2.0)
+    p, a, m = _model(text="X", text_size=5, frame=True, square=True, text_shape=shape)
+    lay = m.layout
+    assert lay.width == pytest.approx(lay.height)
+    assert lay.height == pytest.approx(p.size + lay.band + 2 * p.frame_width)
+    assert lay.qr_origin[0] == pytest.approx((lay.width - p.size) / 2)   # QR centrado
+    lo, hi = m.vertices.min(0), m.vertices.max(0)
+    assert (hi - lo)[:2] == pytest.approx([lay.width, lay.height], abs=1e-4)
+    assert _edge_balance(core.build_model(p, a, shape).triangles) == {}
+    # sin texto la placa ya es cuadrada: el check no cambia nada
+    _, _, plain = _model(square=True)
+    assert plain.layout.width == pytest.approx(plain.layout.height) == pytest.approx(50)
+    assert plain.layout.qr_origin == pytest.approx((0, 0))
+
+
+def test_square_plate_gives_text_more_room():
+    wide = core.TextShape([_square(10.0, 1.0)], 10.0)    # 50 mm a 5 mm de alto
+    _, _, rect = _model(text="X", text_size=5, text_shape=wide)
+    _, _, sq = _model(text="X", text_size=5, square=True, text_shape=wide)
+    assert any("achicó" in w for w in rect.warnings)
+    assert not any("achicó" in w for w in sq.warnings)
+
+
+def test_text_lines():
+    assert core.text_lines("  hola  \n\n  chau \n\n") == ["hola", "", "chau"]
+    assert core.text_lines(" \n \n") == []
+    assert core.text_block_height(1) == 1.0
+    assert core.text_block_height(3) == pytest.approx(1 + 2 * core.LINE_PITCH)
+
+
+def test_multiline_band_grows():
+    one = core.layout_for(core.Params(text="hola"), 25)
+    two = core.layout_for(core.Params(text="hola\nchau"), 25)
+    assert two.band - one.band == pytest.approx(core.Params().text_size * core.LINE_PITCH)
+    assert two.height - one.height == pytest.approx(two.band - one.band)
+
+
+FIXED = dict(fixed_plate=True, plate_width=60, plate_height=70, frame=True, frame_width=2)
+
+
+def test_fixed_plate_keeps_its_size():
+    shape = core.TextShape([_square(2.0, 1.0)], 2.0)
+    for kw in ({}, {"text": "X", "text_shape": shape}, {"text": "X\nY", "priority": "text"}):
+        p, a, m = _model(**FIXED, **kw)
+        lo, hi = m.vertices.min(0), m.vertices.max(0)
+        assert (hi - lo)[:2] == pytest.approx([60, 70], abs=1e-4)
+        assert _edge_balance(m.triangles) == {}
+
+
+def test_fixed_plate_without_text_fills_the_width():
+    p, a, m = _model(**FIXED)
+    lay = m.layout
+    assert lay.qr_size == pytest.approx(56)                     # 60 - 2 × marco
+    assert lay.qr_origin == pytest.approx((2, 2 + (66 - 56) / 2))  # centrado en el alto
+    assert a.module == pytest.approx(56 / a.n)
+
+
+def test_fixed_plate_priority_qr_vs_text():
+    k = core.TEXT_BAND                                          # una línea
+    # placa justa: 60 × 62 → alto disponible 58 para QR + texto
+    base = dict(FIXED, plate_height=62, text="hola", text_size=6)
+    qr_first = core.layout_for(core.Params(**base, priority="qr"), 25)
+    text_first = core.layout_for(core.Params(**base, priority="text"), 25)
+    # QR primero: el texto baja a 4 mm (mínimo) y el QR se queda con el resto
+    assert qr_first.text_size == pytest.approx(core.MIN_TEXT_MM)
+    assert qr_first.qr_size == pytest.approx(58 - k * core.MIN_TEXT_MM)
+    assert qr_first.shrunk_text
+    # texto primero: mantiene sus 6 mm y el QR se achica
+    assert text_first.text_size == pytest.approx(6)
+    assert text_first.qr_size == pytest.approx(58 - k * 6)
+    assert not text_first.shrunk_text
+    assert qr_first.qr_size > text_first.qr_size
+    # con lugar de sobra las dos prioridades dan lo mismo: QR al ancho y texto completo
+    roomy = dict(base, plate_height=100)
+    a = core.layout_for(core.Params(**roomy, priority="qr"), 25)
+    b = core.layout_for(core.Params(**roomy, priority="text"), 25)
+    assert a.qr_size == b.qr_size == pytest.approx(56) and a.text_size == b.text_size == 6
+
+
+def test_fixed_plate_text_priority_keeps_qr_readable():
+    # 60 × 60: con el texto a 8 mm el QR quedaría en 19,2 mm (< 25 = 25 × 1 mm): se frena
+    # en el mínimo y el texto cede lo que falta
+    p = core.Params(**dict(FIXED, plate_height=60, text="a\nb\nc", text_size=8,
+                           priority="text"))
+    lay = core.layout_for(p, 25)
+    assert lay.qr_size == pytest.approx(25 * core.MIN_MODULE_HARD_MM)
+    assert lay.shrunk_text and core.MIN_TEXT_MM < lay.text_size < 8
+
+
+@pytest.mark.parametrize("h", [40, 45, 50, 55, 62, 70, 90])
+@pytest.mark.parametrize("lines", ["hola", "a\nb", "a\nb\nc"])
+def test_priorities_are_consistent(h, lines):
+    """Prioridad al texto nunca da un texto más chico ni un QR más grande que prioridad
+    al QR."""
+    kw = dict(FIXED, plate_height=h, text=lines, text_size=8)
+    try:
+        q = core.layout_for(core.Params(**kw, priority="qr"), 29)
+        t = core.layout_for(core.Params(**kw, priority="text"), 29)
+    except ValueError:
+        return
+    assert t.text_size >= q.text_size - 1e-9
+    assert t.qr_size <= q.qr_size + 1e-9
+    for lay in (q, t):
+        assert lay.qr_size + lay.band <= h - 4 + 1e-9   # entra en el alto (menos el marco)
+
+
+def test_fixed_plate_square_and_errors():
+    lay = core.layout_for(core.Params(**dict(FIXED, square=True)), 25)
+    assert lay.width == lay.height == 60
+    with pytest.raises(ValueError):
+        core.analyze(core.Params(url=URL, **dict(FIXED, plate_width=3)))
+    with pytest.raises(ValueError):
+        core.analyze(core.Params(url=URL, **dict(FIXED, plate_height=10, text="hola",
+                                                 text_size=20, priority="text")))
+    a = core.analyze(core.Params(url=URL, **dict(FIXED, plate_height=62, text="hola")))
+    assert any("se achicó" in w for w in a.warnings)
+
+
 def test_text_hole_is_kept():
     outer = _square(1.0, 1.0)
     hole = (_square(0.5, 0.5, 0.25, 0.25))[::-1]    # sentido opuesto = agujero

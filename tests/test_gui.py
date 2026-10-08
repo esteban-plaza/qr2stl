@@ -42,6 +42,29 @@ def test_text_shape_is_normalised(app):
     assert text_shape("   ").contours == []
 
 
+def test_multiline_text_shape(app):
+    one = text_shape("HOLA")
+    two = text_shape("HOLA\nMUNDO GRANDE")
+    assert two.height == pytest.approx(1 + core.LINE_PITCH)
+    assert two.width > one.width                  # manda la línea más ancha
+    ys = [y for c in two.contours for y in c[:, 1]]
+    assert max(ys) == pytest.approx(core.LINE_PITCH + 1, abs=0.08)
+    assert min(ys) == pytest.approx(0, abs=0.05)
+    # «HOLA» va centrada respecto de «MUNDO GRANDE»
+    top = [x for c in two.contours if c[:, 1].min() > 1 for x in c[:, 0]]
+    assert (min(top) + max(top)) / 2 == pytest.approx(two.width / 2, abs=0.05)
+
+
+def test_multiline_edit_grows(win):
+    h1 = win.text.height()
+    win.text.setText("una\ndos\ntres")
+    win.text._anim.stop()
+    win.text.setFixedHeight(win.text._height_for(min(win.text.lineCount(), win.text.max_lines)))
+    assert win.text.height() > h1 and win.text.lineCount() == 3
+    win.text_section.switch.setChecked(True)
+    assert win.params().text == "una\ndos\ntres"
+
+
 def test_text_with_holes_builds_closed_mesh(app):
     p = core.Params(url="https://example.com", text="ABO8", frame=True, corner_radius=3)
     a = core.analyze(p)
@@ -76,6 +99,54 @@ def test_frame_and_text_change_geometry(win):
     assert win.params().text == "Escaneame"
     win.text_section.switch.setChecked(False)
     assert win.params().text == ""
+
+
+def test_square_lock(win):
+    win.url.setText("https://example.com")
+    win.text_section.switch.setChecked(True)
+    win.rebuild()
+    assert not win.square_lock.isChecked()
+    lay = win.model.layout
+    assert lay.height > lay.width                     # rectángulo por la franja del texto
+    win.square_lock.setChecked(True)
+    win.rebuild()
+    lay = win.model.layout
+    assert lay.width == pytest.approx(lay.height)
+    win.save_settings()
+    assert MainWindow().square_lock.isChecked()       # se recuerda
+    win.reset_defaults()
+    assert not win.square_lock.isChecked()
+
+
+def test_fixed_plate(win):
+    win.url.setText("https://example.com")
+    win.text_section.switch.setChecked(True)
+    win.frame_section.switch.setChecked(True)
+    win.rebuild()
+    before = win.model.layout
+    win.fixed_check.setChecked(True)                  # arranca con las medidas de ahora
+    assert win.plate_w.value() == pytest.approx(round(before.width * 2) / 2)
+    assert win.plate_h.value() == pytest.approx(round(before.height * 2) / 2)
+    assert win.fixed_box.isRevealed() and not win.size_box.isRevealed()
+    win.plate_h.setValue(win.plate_h.value() - 5, animate=False)    # más baja: algo se achica
+    win.rebuild()
+    lay = win.model.layout
+    assert (lay.width, lay.height) == pytest.approx((win.plate_w.value(), win.plate_h.value()))
+    qr_first = lay.qr_size
+    win.priority.setCurrentIndex(1)                   # prioridad al texto
+    win.rebuild()
+    assert win.model.layout.qr_size < qr_first
+    assert win.model.layout.text_size == pytest.approx(win.text_size.value())
+    assert "texto mantiene" in win.priority_caption.text()
+    win.square_lock.setChecked(True)                  # cuadrada: el alto sigue al ancho
+    assert not win.plate_h.isEnabled()
+    assert win.plate_h.value() == pytest.approx(win.plate_w.value())
+    win.save_settings()
+    w2 = MainWindow()
+    assert w2.fixed_check.isChecked() and w2.priority.currentIndex() == 1
+    assert w2.fixed_box.isRevealed() and not w2.size_box.isRevealed()
+    win.reset_defaults()
+    assert not win.fixed_check.isChecked() and win.priority.currentIndex() == 0
 
 
 def test_slider_and_spin_stay_in_sync(win):

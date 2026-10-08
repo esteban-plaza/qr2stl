@@ -14,7 +14,7 @@ Todo lo que está en relieve (código, marco y texto) sale del segundo color con
 Los builds de Windows y macOS (arm64 e Intel) salen de GitHub Actions:
 
 - En cada push a `main` quedan como *artifacts* del workflow **build**.
-- En cada tag `v*` (por ejemplo `git tag v0.2.0 && git push --tags`) se publican en **Releases**.
+- En cada tag `v*` (por ejemplo `git tag v0.2.1 && git push --tags`) se publican en **Releases**.
 
 **macOS:** la app tiene firma ad-hoc, sin notarizar, así que Gatekeeper la bloquea. La primera vez, abrila con clic derecho → Abrir, o corré:
 
@@ -44,12 +44,23 @@ La ventana tiene una sola barra arriba (en macOS, integrada con la barra de tít
 | Tamaño | Lado del QR | 50 mm | Incluye el borde blanco |
 | | Borde blanco | 2 módulos | El estándar pide 4; con la base de otro color, 2 alcanza |
 | | Esquinas redondeadas | 0 mm | Radio de la placa; el marco lo sigue |
+| | Mantener la placa cuadrada | apagado | Con texto la placa se alarga hacia abajo; prendido, crece también a lo ancho (QR centrado) y el texto tiene más lugar |
+| | Fijar el tamaño de la placa | apagado | La placa mide *Ancho × Alto* y el QR y el texto se ajustan adentro (ver abajo) |
 | Alturas | Espesor de la base | 1,2 mm | Conviene que sea múltiplo de la altura de capa |
 | | Relieve | 0,8 mm | Con **Solo múltiplos de la altura de capa** (prendido por defecto) el slider y el campo van de a una capa |
 | Marco | Ancho | 2 mm | Se agrega alrededor del QR, en relieve |
-| Texto debajo | Texto, fuente, negrita | — | Fuentes del sistema; se vectoriza con Qt |
+| Texto debajo | Texto, fuente, negrita | — | Una o varias líneas (Enter agrega otra), cada una centrada. Fuentes del sistema; se vectoriza con Qt |
 | | Alto de las mayúsculas | 6 mm | Si no entra a lo ancho, se achica solo (y avisa) |
 | Impresión | Altura de capa / primera capa | 0,2 / 0,2 mm | Para calcular la capa del cambio de color |
+
+### Placa de tamaño fijo
+
+Con **Fijar el tamaño de la placa**, la placa arranca con las medidas que tenía en ese momento y desde ahí la ajustás con *Ancho* y *Alto*. "Lado del QR" desaparece porque el QR pasa a salir del ajuste. El QR y el texto se reparten el alto disponible y el bloque queda centrado. Con *Placa cuadrada*, el alto sigue al ancho. Si no entra todo:
+
+- **Priorizar QR:** el QR ocupa todo lo que puede y el texto se achica primero, hasta 4 mm.
+- **Priorizar texto:** el texto mantiene su alto y el QR se achica primero, hasta 1 mm por módulo. Por debajo de 1,5 mm aparece el aviso de módulo chico.
+
+Si ni así entra, la app avisa que hay que agrandar la placa o sacar texto.
 
 La app avisa, entre otras cosas, si el módulo mide menos de 1,5 mm, si el texto es muy chico, si el marco se pega al código, si la base no cae en un borde de capa o si el relieve es de una sola capa.
 

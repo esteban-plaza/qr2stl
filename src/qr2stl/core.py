@@ -25,9 +25,11 @@ from qrcode.constants import ERROR_CORRECT_H, ERROR_CORRECT_L, ERROR_CORRECT_M, 
 ECC = {"L (7%)": ERROR_CORRECT_L, "M (15%)": ERROR_CORRECT_M,
        "Q (25%)": ERROR_CORRECT_Q, "H (30%)": ERROR_CORRECT_H}
 
-MIN_MODULE_MM = 1.5
+MIN_MODULE_MM = 1.5          # debajo de esto se avisa
+MIN_MODULE_HARD_MM = 1.0     # con placa fija y prioridad al texto, el QR no baja de acá
 MIN_TEXT_MM = 4.0
 TEXT_BAND = 1.6      # alto de la franja del texto, en múltiplos del alto de las mayúsculas
+LINE_PITCH = 1.5     # distancia entre líneas de base, en múltiplos del alto de las mayúsculas
 _EPS = 1e-6
 
 
@@ -57,6 +59,11 @@ class Params:
     border: int = 2
     ecc: str = "M (15%)"
     corner_radius: float = 0.0
+    square: bool = False        # placa cuadrada: con texto, crece también a lo ancho
+    fixed_plate: bool = False   # placa de medidas fijas: el QR y el texto se ajustan adentro
+    plate_width: float = 60.0
+    plate_height: float = 70.0
+    priority: str = "qr"        # con placa fija, qué se achica último: "qr" o "text"
     frame: bool = False
     frame_width: float = 2.0
     text: str = ""              # vacío = sin texto
@@ -65,12 +72,26 @@ class Params:
     first_layer: float = 0.2
 
 
+def text_lines(text: str) -> list:
+    """Líneas del texto: sin espacios de más y sin renglones vacíos al principio o al final
+    (los del medio se respetan como separación)."""
+    lines = [ln.strip() for ln in text.strip().splitlines()]
+    return lines if any(lines) else []
+
+
+def text_block_height(n_lines: int) -> float:
+    """Alto de un bloque de n líneas, en múltiplos del alto de las mayúsculas."""
+    return 1.0 + (n_lines - 1) * LINE_PITCH if n_lines else 0.0
+
+
 @dataclass
 class TextShape:
-    """Texto vectorizado: contornos cerrados con el alto de mayúsculas = 1 y la línea
-    base en y = 0. Exteriores y agujeros con sentido de giro opuesto (regla NonZero)."""
+    """Texto vectorizado: contornos cerrados con el alto de mayúsculas = 1 y la línea base
+    de la última línea en y = 0 (las anteriores van más arriba, cada `LINE_PITCH`).
+    Exteriores y agujeros con sentido de giro opuesto (regla NonZero)."""
     contours: list
     width: float
+    height: float = 1.0     # alto del bloque, en múltiplos del alto de las mayúsculas
 
 
 @dataclass
@@ -81,6 +102,10 @@ class Layout:
     band: float         # alto de la franja del texto (0 sin texto)
     qr_origin: tuple    # esquina inferior izquierda del QR
     module: float
+    qr_size: float = 0.0     # lado del QR (con placa fija sale del ajuste)
+    text_size: float = 0.0   # alto de las mayúsculas efectivo
+    band_y: float = 0.0      # borde inferior de la franja del texto
+    shrunk_text: bool = False
 
 
 @dataclass
@@ -136,12 +161,50 @@ def _is_multiple(value, step):
 
 # ---------------------------------------------------------------- Análisis
 def layout_for(p: Params, n: int) -> Layout:
-    module = p.size / n
     pad = p.frame_width if p.frame else 0.0
-    band = p.text_size * TEXT_BAND if p.text.strip() else 0.0
+    n_lines = len(text_lines(p.text))
+    # alto de la franja del texto por cada mm de alto de mayúsculas
+    k = (TEXT_BAND - 1 + text_block_height(n_lines)) if n_lines else 0.0
+    if p.fixed_plate:
+        return _fixed_layout(p, n, pad, k)
+    band = p.text_size * k
     width = p.size + 2 * pad
     height = p.size + band + 2 * pad
-    return Layout(width, height, pad, band, (pad, pad + band), module)
+    if p.square:
+        width = height          # el QR queda centrado y sobra ancho a los costados
+    return Layout(width, height, pad, band, ((width - p.size) / 2, pad + band), p.size / n,
+                  p.size, p.text_size if k else 0.0, pad)
+
+
+def _fixed_layout(p: Params, n: int, pad: float, k: float) -> Layout:
+    """Placa de medidas fijas: el QR (cuadrado) y la franja del texto se reparten el alto
+    disponible según la prioridad, y el bloque queda centrado en la placa."""
+    width = p.plate_width
+    height = p.plate_width if p.square else p.plate_height
+    avail_w, avail_h = width - 2 * pad, height - 2 * pad
+    if avail_w <= 0 or avail_h <= 0:
+        raise ValueError("La placa es más chica que el marco.")
+    t0 = p.text_size if k else 0.0
+    if not k:
+        qr, t = min(avail_w, avail_h), 0.0
+    else:
+        # prioridad al QR: el texto se achica primero, hasta MIN_TEXT_MM
+        qr = min(avail_w, avail_h - k * min(t0, MIN_TEXT_MM))
+        if p.priority == "text":
+            # prioridad al texto: mantiene su alto y el QR se achica primero, hasta
+            # MIN_MODULE_HARD_MM por módulo (debajo de 1,5 mm se avisa). Nunca queda más
+            # grande que con prioridad al QR: así el texto no sale más chico que con la
+            # otra opción.
+            min_qr = min(qr, n * MIN_MODULE_HARD_MM)
+            qr = max(min(avail_w, avail_h - k * t0), min_qr)
+        t = min(t0, (avail_h - qr) / k)
+    if qr <= 0 or (k and t <= 0):
+        raise ValueError("No entran el QR y el texto en la placa: agrandala o sacá texto.")
+    band = k * t
+    extra = avail_h - qr - band
+    band_y = pad + extra / 2
+    return Layout(width, height, pad, band, ((width - qr) / 2, band_y + band), qr / n,
+                  qr, t, band_y, shrunk_text=t < t0 - 1e-6)
 
 
 def analyze(p: Params) -> Analysis:
@@ -149,7 +212,8 @@ def analyze(p: Params) -> Analysis:
     data = p.url.strip()
     if not data:
         raise ValueError("Escribí una URL o un texto para el QR.")
-    if p.size <= 0 or p.base <= 0 or p.relief <= 0 or p.layer <= 0 or p.first_layer <= 0:
+    size = (p.plate_width > 0 and p.plate_height > 0) if p.fixed_plate else p.size > 0
+    if not size or p.base <= 0 or p.relief <= 0 or p.layer <= 0 or p.first_layer <= 0:
         raise ValueError("Las medidas tienen que ser mayores que cero.")
     if p.frame and p.frame_width <= 0:
         raise ValueError("El ancho del marco tiene que ser mayor que cero.")
@@ -165,10 +229,13 @@ def analyze(p: Params) -> Analysis:
 
     warns = []
     if lay.module < MIN_MODULE_MM:
-        warns.append(f"Módulo chico ({lay.module:.2f} mm): agrandá el lado o acortá la URL.")
+        bigger = "la placa" if p.fixed_plate else "el lado"
+        warns.append(f"Módulo chico ({lay.module:.2f} mm): agrandá {bigger} o acortá la URL.")
     if p.frame and p.border < 1:
         warns.append("Con marco y borde 0 el marco se pega al código y el QR no se lee.")
-    if p.text.strip() and p.text_size < MIN_TEXT_MM:
+    if lay.shrunk_text:
+        warns.append(f"Para que entre en la placa, el texto se achicó a {lay.text_size:.1f} mm.")
+    if p.text.strip() and lay.text_size < MIN_TEXT_MM - 1e-6:
         warns.append(f"Texto de menos de {MIN_TEXT_MM:g} mm: los trazos pueden no salir.")
     if p.corner_radius > min(lay.width, lay.height) / 2:
         warns.append("El radio de las esquinas es más grande que media placa.")
@@ -215,7 +282,7 @@ def text_section(shape: TextShape, lay: Layout, size, warnings) -> CrossSection:
         scale = avail / shape.width
         warnings.append(f"El texto no entraba: se achicó a {scale:.1f} mm de alto.")
     cx = lay.width / 2 - shape.width * scale / 2
-    cy = lay.pad + lay.band / 2 - scale / 2
+    cy = lay.band_y + lay.band / 2 - shape.height * scale / 2
     contours = [np.asarray(c, dtype=float) * scale + (cx, cy) for c in shape.contours]
     return CrossSection(contours, FillRule.NonZero)
 
@@ -277,7 +344,7 @@ def build_model(p: Params, a: Analysis, text: TextShape | None = None,
     if p.frame:
         extras = extras + frame_section(outline, p.frame_width)
     if text is not None and p.text.strip():
-        extras = extras + (text_section(text, lay, p.text_size, warns) ^ outline)
+        extras = extras + (text_section(text, lay, lay.text_size, warns) ^ outline)
 
     plate = outline.extrude(p.base)
     if exact:

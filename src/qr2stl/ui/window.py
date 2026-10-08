@@ -17,11 +17,12 @@ from .. import __version__, core, gcode
 from ..textshape import text_shape
 from . import macwindow
 from .viewer import Viewer
-from .widgets import (Banner, ColorWell, DropZone, Section, SegmentedControl, Separator,
+from .widgets import (Banner, ColorWell, DropZone, MultiLineEdit, Reveal, Section, SegmentedControl, Separator,
                       SliderField, Toast, ToggleSwitch, accent, caption, mix, with_alpha)
 
 REBUILD_MS = 30
 ECC_KEYS = list(core.ECC)
+PRIORITIES = ["qr", "text"]
 PRINTERS = ["Ender 3 · Cura", "Bambu Lab"]
 COLOR_PRESETS = [("#f4f4f2", "#1c1c1e"), ("#1c1c1e", "#f4f4f2"), ("#ffd60a", "#1c1c1e"),
                  ("#0a84ff", "#ffffff"), ("#ff375f", "#ffffff"), ("#30d158", "#1c1c1e")]
@@ -226,6 +227,16 @@ class FadeStack(QStackedWidget):
         return self.currentWidget().minimumSizeHint() if self.currentWidget() else super().minimumSizeHint()
 
 
+def _small_check(text, checked, tooltip=""):
+    box = QCheckBox(text)
+    box.setChecked(checked)
+    box.setToolTip(tooltip)
+    f = box.font()
+    f.setPointSizeF(max(9.0, f.pointSizeF() - 1.5))
+    box.setFont(f)
+    return box
+
+
 def _row(*widgets, stretch_first=True):
     w = QWidget()
     h = QHBoxLayout(w)
@@ -423,13 +434,33 @@ class MainWindow(QMainWindow):
 
         # Tamaño
         s = Section("Tamaño")
-        self.size = s.addWidget(SliderField("Lado del QR", d.size, 10, 200, 0.5, 1,
-                                            tooltip="Incluye el borde blanco alrededor del código."))
+        self.fixed_check = s.addWidget(_small_check(
+            "Fijar el tamaño de la placa", d.fixed_plate,
+            "La placa mide lo que digas y el QR y el texto se ajustan adentro."))
+        self.fixed_box = s.addWidget(Reveal(shown=d.fixed_plate))
+        self.plate_w = self.fixed_box.addWidget(SliderField("Ancho de la placa", d.plate_width,
+                                                            15, 300, 0.5, 1))
+        self.plate_h = self.fixed_box.addWidget(SliderField("Alto de la placa", d.plate_height,
+                                                            15, 300, 0.5, 1))
+        self.priority = SegmentedControl(["QR", "Texto"], PRIORITIES.index(d.priority))
+        self.priority.setToolTip("Si no entra todo, qué se achica último.")
+        self.priority.setFixedWidth(130)
+        self.fixed_box.addWidget(_row(QLabel("Si no entra, priorizar"), self.priority))
+        self.priority_caption = self.fixed_box.addWidget(caption(""))
+        self.size_box = s.addWidget(Reveal(shown=not d.fixed_plate))
+        self.size = self.size_box.addWidget(SliderField(
+            "Lado del QR", d.size, 10, 200, 0.5, 1,
+            tooltip="Incluye el borde blanco alrededor del código."))
         self.border = s.addWidget(SliderField("Borde blanco", d.border, 0, 8, 1, 0, " mód.",
                                               tooltip="El estándar pide 4 módulos; con base de "
                                                       "otro color, 2 alcanzan."))
         self.radius = s.addWidget(SliderField("Esquinas redondeadas", d.corner_radius, 0, 20,
                                               0.5, 1))
+        self.square_lock = s.addWidget(_small_check(
+            "Mantener la placa cuadrada", d.square,
+            "Con texto debajo la placa se alarga hacia abajo. Con esto prendido crece "
+            "también a lo ancho (el QR queda centrado), así sigue siendo cuadrada y el "
+            "texto tiene más lugar."))
         lay.addWidget(s)
         lay.addWidget(Separator())
 
@@ -439,14 +470,10 @@ class MainWindow(QMainWindow):
                                             tooltip="Conviene que sea múltiplo de la altura de capa."))
         self.relief = s.addWidget(SliderField("Relieve", d.relief, 0.2, 4, 0.04, 2,
                                               tooltip="Código, marco y texto. Al menos 2 capas."))
-        self.relief_snap = QCheckBox("Solo múltiplos de la altura de capa")
-        self.relief_snap.setChecked(True)
-        self.relief_snap.setToolTip("El slider y el campo saltan de a una capa, así el relieve "
-                                    "siempre termina justo en un borde de capa.")
-        f = self.relief_snap.font()
-        f.setPointSizeF(max(9.0, f.pointSizeF() - 1.5))
-        self.relief_snap.setFont(f)
-        s.addWidget(self.relief_snap)
+        self.relief_snap = s.addWidget(_small_check(
+            "Solo múltiplos de la altura de capa", True,
+            "El slider y el campo saltan de a una capa, así el relieve siempre termina "
+            "justo en un borde de capa."))
         lay.addWidget(s)
         lay.addWidget(Separator())
 
@@ -461,9 +488,9 @@ class MainWindow(QMainWindow):
 
         # Texto
         self.text_section = Section("Texto debajo", expanded=False, switch=False)
-        self.text = QLineEdit()
+        self.text = MultiLineEdit(max_lines=4)
         self.text.setPlaceholderText("Escaneame")
-        self.text.setClearButtonEnabled(True)
+        self.text.setToolTip("Enter agrega otra línea. Cada línea se centra.")
         self.text_section.addWidget(self.text)
         self.font_box = QFontComboBox()
         self.font_box.setCurrentFont(QFont(default_font_family()))
@@ -592,7 +619,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ señales
     def _sliders(self):
-        return (self.size, self.border, self.radius, self.base, self.relief, self.frame_width,
+        return (self.size, self.plate_w, self.plate_h, self.border, self.radius, self.base,
+                self.relief, self.frame_width,
                 self.text_size, self.layer, self.first_layer)
 
     def _connect(self):
@@ -602,6 +630,11 @@ class MainWindow(QMainWindow):
         self.text.textChanged.connect(self.schedule)
         self.font_box.currentFontChanged.connect(self.schedule)
         self.bold.toggled.connect(self.schedule)
+        self.square_lock.toggled.connect(self._sync_plate_ui)
+        self.square_lock.toggled.connect(self.schedule)
+        self.fixed_check.toggled.connect(self._on_fixed)
+        self.priority.currentChanged.connect(self.schedule)
+        self.plate_w.valueChanged.connect(self._sync_plate_ui)
         self.ecc.currentChanged.connect(self.schedule)
         self.frame_section.toggled.connect(self.schedule)
         self.text_section.toggled.connect(self._on_text_toggled)
@@ -613,6 +646,28 @@ class MainWindow(QMainWindow):
         for s in (self.park_x, self.park_y, self.lift, self.retract, self.purge):
             s.valueChanged.connect(self._save_timer.start)
         self.viewer.set_colors(self.plate_color.color(), self.code_color.color())
+
+    def _on_fixed(self, on):
+        """Al fijar la placa, arranca con las medidas que tiene ahora (lo que se ve queda
+        igual) y desde ahí se ajusta."""
+        if on and not self._restoring and self.model is not None:
+            lay = self.model.layout
+            self.plate_w.setValue(round(lay.width * 2) / 2)
+            self.plate_h.setValue(round(lay.height * 2) / 2)
+        self.fixed_box.setRevealed(on)
+        self.size_box.setRevealed(not on)
+        self._sync_plate_ui()
+        self.schedule()
+
+    def _sync_plate_ui(self, *_):
+        """Con placa fija y cuadrada, el alto sigue al ancho."""
+        square = self.square_lock.isChecked()
+        self.plate_h.setEnabled(not square)
+        fixed = self.fixed_check.isChecked()
+        if square and fixed and abs(self.plate_h.value() - self.plate_w.value()) > 1e-6:
+            self.plate_h.setValue(self.plate_w.value())
+        self.square_lock.setText("Placa cuadrada (el alto sigue al ancho)" if fixed
+                                 else "Mantener la placa cuadrada")
 
     def _apply_relief_grid(self, animate=True):
         """Con el check prendido, el relieve se mueve de a una capa (y su default es el
@@ -658,6 +713,9 @@ class MainWindow(QMainWindow):
             url=self.url.text(), size=self.size.value(), base=self.base.value(),
             relief=self.relief.value(), border=int(round(self.border.value())),
             ecc=ECC_KEYS[self.ecc.currentIndex()], corner_radius=self.radius.value(),
+            square=self.square_lock.isChecked(),
+            fixed_plate=self.fixed_check.isChecked(), plate_width=self.plate_w.value(),
+            plate_height=self.plate_h.value(), priority=PRIORITIES[self.priority.currentIndex()],
             frame=self.frame_section.switch.isChecked(), frame_width=self.frame_width.value(),
             text=self.text.text() if self.text_section.switch.isChecked() else "",
             text_size=self.text_size.value(), layer=self.layer.value(),
@@ -693,8 +751,8 @@ class MainWindow(QMainWindow):
         self._structure = structure
         lay = model.layout
         dims = f"{mm(lay.width, 1)} × {mm(lay.height, 1)} × {mm(model.top)} mm"
-        stats = (f"QR v{a.version} · {a.n}×{a.n} módulos de {mm(a.module)} mm · "
-                 f"cambio de color en la capa {a.pause_layer}")
+        stats = (f"QR v{a.version} de {mm(lay.qr_size, 1)} mm · {a.n}×{a.n} módulos de "
+                 f"{mm(a.module)} mm · cambio de color en la capa {a.pause_layer}")
         self.viewer.set_model(model, stats, dims)
         self.banner.show_messages(a.warnings + model.warnings)
         self.export_btn.setEnabled(True)
@@ -706,6 +764,14 @@ class MainWindow(QMainWindow):
         names = {"L": "tolera ~7% de daño", "M": "tolera ~15% de daño",
                  "Q": "tolera ~25% de daño", "H": "tolera ~30% de daño"}
         self.ecc_caption.setText(names[ECC_KEYS[self.ecc.currentIndex()][0]].capitalize() + ".")
+        if self.priority.currentIndex() == 0:
+            self.priority_caption.setText("El QR ocupa todo lo que puede; el texto se achica "
+                                          f"primero, hasta {core.MIN_TEXT_MM:g} mm.")
+        else:
+            self.priority_caption.setText(
+                "El texto mantiene su alto; el QR se achica primero, hasta "
+                f"{mm(core.MIN_MODULE_HARD_MM, 0)} mm por módulo (debajo de "
+                f"{mm(core.MIN_MODULE_MM, 1)} mm avisa).")
         a = self.analysis
         if a is None:
             self.pause_info.setText("")
@@ -784,7 +850,7 @@ class MainWindow(QMainWindow):
                                 lambda: reveal_in_file_manager(out))
 
     # ------------------------------------------------------------ preferencias
-    _KEYS = ("size", "border", "radius", "base", "relief", "frame_width", "text_size", "layer",
+    _KEYS = ("size", "plate_w", "plate_h", "border", "radius", "base", "relief", "frame_width", "text_size", "layer",
              "first_layer")
 
     def save_settings(self):
@@ -794,6 +860,9 @@ class MainWindow(QMainWindow):
             s.setValue(f"p/{k}", getattr(self, k).value())
         s.setValue("p/ecc", self.ecc.currentIndex())
         s.setValue("p/relief_snap", self.relief_snap.isChecked())
+        s.setValue("p/square", self.square_lock.isChecked())
+        s.setValue("p/fixed", self.fixed_check.isChecked())
+        s.setValue("p/priority", self.priority.currentIndex())
         s.setValue("p/frame", self.frame_section.switch.isChecked())
         s.setValue("p/text_on", self.text_section.switch.isChecked())
         s.setValue("p/text", self.text.text())
@@ -828,6 +897,13 @@ class MainWindow(QMainWindow):
             w = getattr(self, k)
             w.setValue(num(f"p/{k}", w.value()), animate=animate)
         self.ecc.setCurrentIndex(int(num("p/ecc", self.ecc.currentIndex())), animate=animate)
+        self.square_lock.setChecked(flag("p/square", False))
+        self.priority.setCurrentIndex(int(num("p/priority", 0)), animate=animate)
+        fixed = flag("p/fixed", False)
+        self.fixed_check.setChecked(fixed)
+        self.fixed_box.setRevealed(fixed, animate=animate)
+        self.size_box.setRevealed(not fixed, animate=animate)
+        self._sync_plate_ui()
         frame = flag("p/frame", False)
         self.frame_section.switch.setChecked(frame)
         self.frame_section.setExpanded(frame, animate=animate)
@@ -876,6 +952,9 @@ class MainWindow(QMainWindow):
         for w in self._sliders():
             w.reset()                       # los sliders viajan animados a su valor
         self.ecc.setCurrentIndex(ECC_KEYS.index(d.ecc))
+        self.square_lock.setChecked(d.square)
+        self.fixed_check.setChecked(d.fixed_plate)
+        self.priority.setCurrentIndex(PRIORITIES.index(d.priority))
         self.frame_section.switch.setChecked(False)
         self.text_section.switch.setChecked(False)
         self.font_box.setCurrentFont(QFont(default_font_family()))
