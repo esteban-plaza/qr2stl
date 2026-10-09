@@ -15,6 +15,9 @@ def _selftest(app):
     """CI: verifica que el ejecutable empaquetado arranca, genera un modelo y que el visor
     3D (QML + Qt Quick 3D) carga."""
     from .ui.window import MainWindow
+    for stream in (sys.stdout, sys.stderr):   # en Windows la consola es cp1252
+        if stream is not None:
+            stream.reconfigure(encoding="utf-8", errors="replace")
     app.setOrganizationName("qr2stl-selftest")
     w = MainWindow()
     w.url.setText("https://example.com")
